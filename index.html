@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>射タイムシフトカメラ</title>
+<style>
+  :root {
+    --bg: #15140f;
+    --bg-panel: #1e1c15;
+    --line: #34302380;
+    --text: #ece6d6;
+    --text-dim: #a49d87;
+    --accent: #b2402c;
+    --accent-dim: #7a2c1f;
+    --ok: #5c8a5c;
+    --warn: #c9a13b;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Hiragino Sans", "Yu Gothic", "Noto Sans JP", sans-serif;
+    overscroll-behavior: none;
+    user-select: none;
+  }
+  #app {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column;
+  }
+  header {
+    padding: max(12px, env(safe-area-inset-top)) 16px 10px;
+    display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 {
+    font-size: 16px; font-weight: 600; margin: 0; letter-spacing: 0.02em;
+    flex-shrink: 0;
+  }
+  #headerRight { display: flex; align-items: center; gap: 10px; }
+  #status { font-size: 12px; color: var(--text-dim); }
+  #status.live { color: var(--ok); }
+  #debugToggle {
+    font-size: 11px; padding: 4px 9px; border-radius: 6px;
+    background: transparent; border: 1px solid var(--line); color: var(--text-dim);
+  }
+  #debugToggle.on { color: var(--warn); border-color: var(--warn); }
+
+  #stage {
+    position: relative; flex: 1; min-height: 0;
+    background: #000;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+  }
+  #displayCanvas {
+    max-width: 100%; max-height: 100%;
+    width: 100%; height: 100%;
+    object-fit: contain;
+  }
+  #stageMessage {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 24px; gap: 14px;
+    color: var(--text-dim); font-size: 15px; line-height: 1.8;
+  }
+  #stageMessage p { margin: 0; max-width: 46em; }
+  #diagLine {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; color: var(--text-dim); opacity: 0.75;
+    white-space: pre-wrap; max-width: 46em;
+  }
+  #diagLine .bad { color: var(--warn); }
+  #delayBadge {
+    position: absolute; top: 14px; left: 14px;
+    background: rgba(21,20,15,0.72);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 13px;
+    letter-spacing: 0.03em;
+    color: var(--text);
+    pointer-events: none;
+  }
+  #delayBadge b { color: var(--accent); font-weight: 700; }
+
+  #debugPanel {
+    position: absolute; top: 14px; right: 14px;
+    background: rgba(10,10,8,0.82);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 11px;
+    line-height: 1.7;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--text-dim);
+    pointer-events: none;
+    display: none;
+    max-width: 62vw;
+  }
+  #debugPanel .warn { color: var(--warn); }
+  #debugPanel .row { display: flex; justify-content: space-between; gap: 12px; }
+  #debugPanel .row span:last-child { color: var(--text); }
+
+  footer {
+    padding: 14px 16px max(14px, env(safe-area-inset-bottom));
+    background: var(--bg-panel);
+    border-top: 1px solid var(--line);
+  }
+  .row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+  .row + .row { margin-top: 10px; }
+  .label { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; letter-spacing: 0.04em; }
+  button {
+    font-family: inherit;
+    border: 1px solid var(--line);
+    background: #262319;
+    color: var(--text);
+    border-radius: 10px;
+    padding: 10px 16px;
+    font-size: 14px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  button:active { background: #332e20; }
+  button.selected { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+  button.wide { flex: 1; }
+  button.adjust { min-width: 46px; text-align: center; font-weight: 700; }
+  button.primary {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+    font-weight: 700; padding: 14px 16px; font-size: 16px;
+  }
+  button.primary:active { background: var(--accent-dim); }
+  button.secondary-action {
+    background: transparent; border: 1px solid var(--text-dim); color: var(--text);
+    padding: 12px 16px; font-size: 15px; font-weight: 600;
+  }
+  button:disabled { opacity: 0.4; }
+  #slowIndicator {
+    position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+    background: var(--accent); color: #fff;
+    font-size: 13px; font-weight: 700; letter-spacing: 0.05em;
+    padding: 6px 14px; border-radius: 999px;
+    display: none;
+    pointer-events: none;
+  }
+  #privacyNote { font-size: 11px; color: var(--text-dim); text-align: center; margin: 10px 0 0; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>射タイムシフトカメラ</h1>
+    <div id="headerRight">
+      <span id="status">起動中…</span>
+      <button id="debugToggle">デバッグ</button>
+    </div>
+  </header>
+
+  <div id="stage">
+    <canvas id="displayCanvas"></canvas>
+    <div id="delayBadge" style="display:none">遅延 <b id="delayValueLabel">10</b> 秒</div>
+    <div id="slowIndicator">SLOW 1/3x</div>
+    <div id="debugPanel"></div>
+    <div id="stageMessage">
+      <p id="stageMessageText">カメラへのアクセスを準備しています…</p>
+      <div id="diagLine"></div>
+    </div>
+  </div>
+
+  <footer>
+    <div class="label">再生コントロール</div>
+    <div class="row">
+      <button id="seekBack" class="wide">5秒戻る</button>
+      <button id="playPause" class="wide">再生／停止</button>
+      <button id="seekForward" class="wide">5秒進む</button>
+    </div>
+    <div class="row">
+      <button id="slowCheck" class="primary wide">スロー確認</button>
+    </div>
+    <div class="row">
+      <button id="goLive" class="secondary-action wide">現在へ</button>
+    </div>
+
+    <div class="label" style="margin-top:14px">遅延時間</div>
+    <div class="row" id="delayPresets"></div>
+
+    <div class="row">
+      <button id="minusOne" class="adjust">−1秒</button>
+      <button id="plusOne" class="adjust">＋1秒</button>
+      <button id="flipCamera" class="wide">カメラ切替</button>
+      <button id="mirrorToggle" class="wide">左右反転</button>
+    </div>
+
+    <p id="privacyNote">映像は端末内でのみ処理され、外部には送信・保存されません。</p>
+  </footer>
+</div>
+
+<video id="sourceVideo" autoplay muted playsinline style="display:none"></video>
+
+<script src="bufferEngine.js"></script>
+<script src="playbackEngine.js"></script>
+<script>
+(() => {
+  "use strict";
+
+  // ---- 設定 ----
+  const PRESETS = [1, 2, 3, 5, 7, 10, 15, 20, 25, 30];
+  const DEFAULT_DELAY = 10;
+  const MAX_DELAY_SEC = 30;
+  const BUFFER_SCALE_WIDTH = 640;
+  const CAPTURE_INTERVAL_MS = 1000 / 24;
+  const FPS_WINDOW_MS = 2000; // 実効fps算出のための移動窓
+  const SLOW_WINDOW_SEC = 5;
+  const SLOW_RATE = 1 / 3;
+  const SEEK_STEP_SEC = 5;
+  // バッファ保持時間：最大遅延(30秒) + 「最大遅延位置からさらに5秒戻る/スロー確認する」ケースに
+  // 対応できるだけの余裕を持たせる
+  const BUFFER_RETENTION_SEC = MAX_DELAY_SEC + SLOW_WINDOW_SEC + 5;
+
+  // ---- 状態 ----
+  let delaySeconds = Number(localStorage.getItem("delaySeconds")) || DEFAULT_DELAY;
+  let mirrored = localStorage.getItem("mirrored") === "1";
+  let facingMode = localStorage.getItem("facingMode") || "environment";
+  let stream = null;
+  let running = false;
+  let lastCaptureTime = 0;
+  let cameraGeneration = 0;       // カメラ切替のたびに増分
+  let pendingBitmapCount = 0;     // createImageBitmap待ち件数
+  let debugMode = false;
+
+  // 実効fps測定用（直近の確定(=バッファ追加済み)フレーム時刻の履歴）
+  const captureTimestamps = [];
+
+  // リングバッファ: time昇順を常に維持する {time, bitmap}
+  const frameBuffer = [];
+
+  // 遅延精度計測用
+  let lastDisplayedFrameTime = null;
+  let lastDisplayedTargetTime = null;
+
+  // ---- Playback Engine ----
+  // Buffer Engine(frameBuffer配列)には一切アクセスさせない。
+  // 渡すのは nowMs と「バッファ最古フレームの時刻」という数値だけ。
+  const playback = new PlaybackEngine.PlaybackEngine({ delaySeconds });
+
+  // ---- DOM ----
+  const sourceVideo = document.getElementById("sourceVideo");
+  const displayCanvas = document.getElementById("displayCanvas");
+  const displayCtx = displayCanvas.getContext("2d", { alpha: false });
+  const stageMessage = document.getElementById("stageMessage");
+  const stageMessageText = document.getElementById("stageMessageText");
+  const diagLine = document.getElementById("diagLine");
+  const delayBadge = document.getElementById("delayBadge");
+  const delayValueLabel = document.getElementById("delayValueLabel");
+  const slowIndicator = document.getElementById("slowIndicator");
+  const statusEl = document.getElementById("status");
+  const presetsRow = document.getElementById("delayPresets");
+  const flipBtn = document.getElementById("flipCamera");
+  const mirrorBtn = document.getElementById("mirrorToggle");
+  const debugToggleBtn = document.getElementById("debugToggle");
+  const debugPanel = document.getElementById("debugPanel");
+  const seekBackBtn = document.getElementById("seekBack");
+  const seekForwardBtn = document.getElementById("seekForward");
+  const playPauseBtn = document.getElementById("playPause");
+  const slowCheckBtn = document.getElementById("slowCheck");
+  const goLiveBtn = document.getElementById("goLive");
+
+  const bufferCanvas = document.createElement("canvas");
+  const bufferCtx = bufferCanvas.getContext("2d", { alpha: false });
+
+  function setStatus(text, live) {
+    statusEl.textContent = text;
+    statusEl.classList.toggle("live", !!live);
+  }
+  function setMessage(text) {
+    stageMessageText.textContent = text;
+    stageMessage.style.display = text ? "flex" : "none";
+  }
+
+  // ---- 起動時の環境診断 ----
+  // getUserMedia()は失敗時に必ず例外を投げるとは限らず、環境によっては
+  // 「許可ダイアログ自体が出ないまま無言で止まる」ことがある(特にfile://で開いた場合)。
+  // そのため、まず静的にわかる情報を表示しておく。
+  function buildDiagText() {
+    const secure = window.isSecureContext;
+    const hasMediaDevices = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    const isTopFrame = window.self === window.top;
+    const lines = [
+      "protocol: " + location.protocol,
+      "secureContext: " + secure,
+      "mediaDevices対応: " + hasMediaDevices,
+      "トップフレームで実行: " + isTopFrame,
+    ];
+    let warning = "";
+    if (location.protocol === "file:") {
+      warning =
+        "\n⚠ file:// で開いています。カメラ利用にはHTTPS(またはlocalhost)配信が必要です。\n" +
+        "許可ダイアログが表示されないまま、この画面から進まなくなっている可能性が高いです。";
+    } else if (!secure) {
+      warning = "\n⚠ セキュアコンテキストではありません。HTTPS配信に切り替えてください。";
+    } else if (!isTopFrame) {
+      warning = "\n⚠ iframe内で開かれています。埋め込み元がカメラ権限を許可していない可能性があります。";
+    }
+    return lines.join(" / ") + warning;
+  }
+  function showDiag(extra) {
+    let text = buildDiagText();
+    if (extra) text += "\n" + extra;
+    diagLine.innerHTML = text.replace(/⚠.*$/gms, (m) => '<span class="bad">' + m + "</span>");
+  }
+
+  // ---- 遅延プリセットUI ----
+  function renderPresets() {
+    presetsRow.innerHTML = "";
+    PRESETS.forEach((sec) => {
+      const b = document.createElement("button");
+      b.textContent = sec + "秒";
+      b.className = sec === delaySeconds ? "selected" : "";
+      b.addEventListener("click", () => setDelay(sec));
+      presetsRow.appendChild(b);
+    });
+  }
+  function setDelay(sec) {
+    delaySeconds = Math.min(MAX_DELAY_SEC, Math.max(1, sec));
+    localStorage.setItem("delaySeconds", String(delaySeconds));
+    delayValueLabel.textContent = delaySeconds;
+    playback.setDelaySeconds(delaySeconds);
+    renderPresets();
+  }
+  document.getElementById("minusOne").addEventListener("click", () => setDelay(delaySeconds - 1));
+  document.getElementById("plusOne").addEventListener("click", () => setDelay(delaySeconds + 1));
+
+  mirrorBtn.addEventListener("click", () => {
+    mirrored = !mirrored;
+    localStorage.setItem("mirrored", mirrored ? "1" : "0");
+    mirrorBtn.classList.toggle("selected", mirrored);
+  });
+  mirrorBtn.classList.toggle("selected", mirrored);
+
+  debugToggleBtn.addEventListener("click", () => {
+    debugMode = !debugMode;
+    debugToggleBtn.classList.toggle("on", debugMode);
+    debugPanel.style.display = debugMode ? "block" : "none";
+  });
+
+  flipBtn.addEventListener("click", async () => {
+    facingMode = facingMode === "environment" ? "user" : "environment";
+    localStorage.setItem("facingMode", facingMode);
+    await startCamera();
+  });
+
+  // ---- 再生コントロール（Playback Engineの状態を操作するだけ。frameBufferには触れない）----
+  seekBackBtn.addEventListener("click", () => playback.seekBy(-SEEK_STEP_SEC));
+  seekForwardBtn.addEventListener("click", () => playback.seekBy(SEEK_STEP_SEC));
+  goLiveBtn.addEventListener("click", () => playback.goLive());
+  slowCheckBtn.addEventListener("click", () => playback.playRecentWindow(SLOW_WINDOW_SEC, SLOW_RATE));
+  playPauseBtn.addEventListener("click", () => {
+    const label = playback.getStateLabel();
+    if (label === "PAUSE" || label === "SLOW_PAUSED") {
+      playback.resume();
+    } else {
+      playback.pause();
+    }
+  });
+
+  // ---- バッファ全クリア（カメラ切替・再起動時）----
+  function clearBuffer() {
+    for (const f of frameBuffer) {
+      try { f.bitmap.close(); } catch (e) {}
+    }
+    frameBuffer.length = 0;
+    captureTimestamps.length = 0;
+  }
+
+  // ---- カメラ起動 ----
+  async function startCamera() {
+    setMessage("カメラへのアクセスを準備しています…");
+    setStatus("接続中…", false);
+    showDiag();
+    running = false;
+
+    cameraGeneration += 1; // このタイミング以降に確定するBitmapのみ有効
+    const myGeneration = cameraGeneration;
+
+    if (stream) {
+      stream.getTracks().forEach((t) => t.stop());
+      stream = null;
+    }
+    clearBuffer();
+    playback.goLive(); // バッファが入れ替わるため、再生位置の手動操作状態を持ち越さない
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setMessage("このブラウザはカメラ機能に対応していません。");
+      showDiag();
+      setStatus("非対応", false);
+      return;
+    }
+
+    // getUserMedia()は、許可ダイアログ自体が表示されない環境(file://での実行など)では
+    // 成功も失敗もせず無言で止まることがある。一定時間応答がなければヒントを追加表示する。
+    const watchdog = setTimeout(() => {
+      showDiag(
+        "⚠ " + 8 + "秒経っても応答がありません。許可ダイアログが表示されていないか確認してください。"
+      );
+    }, 8000);
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: facingMode },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 },
+        },
+      });
+    } catch (err) {
+      clearTimeout(watchdog);
+      console.error(err);
+      if (err && err.name === "NotAllowedError") {
+        setMessage("カメラの利用が許可されていません。ブラウザの設定でカメラへのアクセスを許可してください。");
+      } else if (err && err.name === "NotFoundError") {
+        setMessage("利用できるカメラが見つかりませんでした。");
+      } else {
+        setMessage("カメラを起動できませんでした（" + (err && err.message ? err.message : "不明なエラー") + "）。");
+      }
+      showDiag();
+      setStatus("エラー", false);
+      return;
+    }
+    clearTimeout(watchdog);
+
+    if (myGeneration !== cameraGeneration) {
+      // 切替がさらに発生していた場合はこのstreamは破棄
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+
+    sourceVideo.srcObject = stream;
+    await sourceVideo.play().catch(() => {});
+
+    const track = stream.getVideoTracks()[0];
+    const settings = track.getSettings ? track.getSettings() : {};
+    const srcW = settings.width || sourceVideo.videoWidth || 1280;
+    const srcH = settings.height || sourceVideo.videoHeight || 720;
+    const scale = BUFFER_SCALE_WIDTH / srcW;
+    bufferCanvas.width = Math.round(srcW * scale);
+    bufferCanvas.height = Math.round(srcH * scale);
+    displayCanvas.width = srcW;
+    displayCanvas.height = srcH;
+
+    setMessage("");
+    setStatus("LIVE（遅延中）", true);
+    running = true;
+  }
+
+  // ---- time昇順を保った挿入・時刻検索は bufferEngine.js の共通実装を利用 ----
+  // (ブラウザ実装とテストコードでロジックが乖離しないようにするため)
+  const insertSorted = (frame) => BufferEngine.insertSorted(frameBuffer, frame);
+
+  // ---- フレーム取り込み ----
+  function captureFrame(now) {
+    if (now - lastCaptureTime < CAPTURE_INTERVAL_MS) return;
+    if (sourceVideo.readyState < 2) return;
+    lastCaptureTime = now;
+
+    const myGeneration = cameraGeneration;
+    bufferCtx.drawImage(sourceVideo, 0, 0, bufferCanvas.width, bufferCanvas.height);
+
+    pendingBitmapCount++;
+    createImageBitmap(bufferCanvas)
+      .then((bmp) => {
+        pendingBitmapCount--;
+        // カメラが切り替わった後に完了したBitmapは破棄する（混入防止）
+        if (myGeneration !== cameraGeneration) {
+          bmp.close();
+          return;
+        }
+        insertSorted({ time: now, bitmap: bmp });
+        captureTimestamps.push(now);
+
+        // 統計用の古い履歴を間引く
+        const fpsCutoff = now - FPS_WINDOW_MS;
+        while (captureTimestamps.length && captureTimestamps[0] < fpsCutoff) {
+          captureTimestamps.shift();
+        }
+
+        // 古いフレームの破棄（設定した保持時間を超えたら破棄）
+        const cutoff = now - BUFFER_RETENTION_SEC * 1000;
+        while (frameBuffer.length && frameBuffer[0].time < cutoff) {
+          const old = frameBuffer.shift();
+          old.bitmap.close();
+        }
+      })
+      .catch(() => {
+        pendingBitmapCount--;
+      });
+  }
+
+  // ---- 時刻検索は bufferEngine.js の共通実装(二分探索)を利用 ----
+  const findFrameAt = (targetTime) => BufferEngine.findFrameAt(frameBuffer, targetTime);
+
+  // ---- 表示 ----
+  // 「どのtimestampを表示するか」はPlayback Engineが決定し、
+  // 実際のフレーム取得はBuffer EngineのfindFrameAtに委ねる。
+  // Playback Engineはframe配列を直接加工しない(疎結合)。
+  function renderFrame(now) {
+    if (!running) return;
+
+    const oldestAvailableTime = frameBuffer.length ? frameBuffer[0].time : now;
+    const targetTime = playback.update(now, oldestAvailableTime);
+    const frame = findFrameAt(targetTime);
+
+    if (frame) {
+      displayCtx.save();
+      if (mirrored) {
+        displayCtx.translate(displayCanvas.width, 0);
+        displayCtx.scale(-1, 1);
+      }
+      displayCtx.drawImage(frame.bitmap, 0, 0, displayCanvas.width, displayCanvas.height);
+      displayCtx.restore();
+      delayBadge.style.display = "block";
+      lastDisplayedFrameTime = frame.time;
+      lastDisplayedTargetTime = targetTime;
+    } else {
+      delayBadge.style.display = "none";
+    }
+
+    updatePlaybackUI();
+  }
+
+  const STATE_LABEL_JA = {
+    DELAY: "遅延中",
+    PAUSE: "一時停止",
+    REPLAY: "再生中（過去）",
+    SLOW: "スロー再生 1/3x",
+    SLOW_PAUSED: "スロー再生（一時停止）",
+  };
+
+  function updatePlaybackUI() {
+    const label = playback.getStateLabel();
+    setStatus(STATE_LABEL_JA[label] || label, label === "DELAY");
+    slowIndicator.style.display = label === "SLOW" || label === "SLOW_PAUSED" ? "block" : "none";
+    playPauseBtn.textContent = label === "PAUSE" || label === "SLOW_PAUSED" ? "再生" : "一時停止";
+    goLiveBtn.disabled = label === "DELAY";
+  }
+
+  // ---- デバッグ表示 ----
+  let lastDebugUpdate = 0;
+  function updateDebugPanel(now) {
+    if (!debugMode) return;
+    if (now - lastDebugUpdate < 250) return; // 更新頻度を抑える
+    lastDebugUpdate = now;
+
+    const effFps = captureTimestamps.length > 1
+      ? ((captureTimestamps.length - 1) / ((captureTimestamps[captureTimestamps.length - 1] - captureTimestamps[0]) / 1000)).toFixed(1)
+      : "-";
+
+    const bufDurationSec = frameBuffer.length
+      ? ((frameBuffer[frameBuffer.length - 1].time - frameBuffer[0].time) / 1000).toFixed(2)
+      : "0";
+
+    const camRes = sourceVideo.videoWidth ? (sourceVideo.videoWidth + "x" + sourceVideo.videoHeight) : "-";
+    const bufRes = bufferCanvas.width ? (bufferCanvas.width + "x" + bufferCanvas.height) : "-";
+
+    let memText = "取得不可";
+    if (performance.memory) {
+      memText = (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + " MB";
+    }
+
+    let delayDiffText = "-";
+    if (lastDisplayedFrameTime !== null) {
+      const actualDelayMs = now - lastDisplayedFrameTime;
+      const diffMs = actualDelayMs - delaySeconds * 1000;
+      delayDiffText = (diffMs >= 0 ? "+" : "") + diffMs.toFixed(0) + " ms";
+    }
+
+    const pendingWarn = pendingBitmapCount > 10 ? ' class="warn"' : "";
+
+    debugPanel.innerHTML =
+      row("カメラ解像度", camRes) +
+      row("バッファ解像度", bufRes) +
+      row("バッファ枚数", frameBuffer.length + " 枚") +
+      row("バッファ長", bufDurationSec + " 秒") +
+      row("実効fps", effFps) +
+      row("設定遅延", delaySeconds + " 秒") +
+      row("再生状態", playback.getStateLabel()) +
+      row("実遅延との差", delayDiffText) +
+      `<div class="row"><span>Bitmap待ち</span><span${pendingWarn}>${pendingBitmapCount}</span></div>` +
+      row("JSヒープ", memText);
+  }
+  function row(label, value) {
+    return `<div class="row"><span>${label}</span><span>${value}</span></div>`;
+  }
+
+  function loop() {
+    const now = performance.now();
+    if (running) {
+      captureFrame(now);
+      renderFrame(now);
+    }
+    updateDebugPanel(now);
+    requestAnimationFrame(loop);
+  }
+
+  // ---- 初期化 ----
+  delayValueLabel.textContent = delaySeconds;
+  renderPresets();
+  startCamera();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
