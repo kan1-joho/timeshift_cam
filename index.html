@@ -102,36 +102,37 @@
   #debugPanel .row span:last-child { color: var(--text); }
 
   footer {
-    padding: 14px 16px max(14px, env(safe-area-inset-bottom));
+    padding: 8px 12px max(8px, env(safe-area-inset-bottom));
     background: var(--bg-panel);
     border-top: 1px solid var(--line);
   }
-  .row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
-  .row + .row { margin-top: 10px; }
-  .label { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; letter-spacing: 0.04em; }
+  .row { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+  .row + .row { margin-top: 6px; }
+  .label { font-size: 10px; color: var(--text-dim); margin-bottom: 4px; letter-spacing: 0.04em; }
   button {
     font-family: inherit;
     border: 1px solid var(--line);
     background: #262319;
     color: var(--text);
-    border-radius: 10px;
-    padding: 10px 16px;
-    font-size: 14px;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
     white-space: nowrap;
     flex-shrink: 0;
   }
   button:active { background: #332e20; }
   button.selected { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
   button.wide { flex: 1; }
-  button.adjust { min-width: 46px; text-align: center; font-weight: 700; }
+  button.grow2 { flex: 2; }
+  button.adjust { min-width: 42px; text-align: center; font-weight: 700; }
   button.primary {
     background: var(--accent); border-color: var(--accent); color: #fff;
-    font-weight: 700; padding: 14px 16px; font-size: 16px;
+    font-weight: 700; padding: 10px 14px; font-size: 15px;
   }
   button.primary:active { background: var(--accent-dim); }
   button.secondary-action {
     background: transparent; border: 1px solid var(--text-dim); color: var(--text);
-    padding: 12px 16px; font-size: 15px; font-weight: 600;
+    padding: 8px 14px; font-size: 13px; font-weight: 600;
   }
   button:disabled { opacity: 0.4; }
   #slowIndicator {
@@ -142,7 +143,23 @@
     display: none;
     pointer-events: none;
   }
-  #privacyNote { font-size: 11px; color: var(--text-dim); text-align: center; margin: 10px 0 0; line-height: 1.6; }
+  #privacyNote { font-size: 10px; color: var(--text-dim); text-align: center; margin: 8px 0 0; line-height: 1.5; }
+
+  #settingsToggle {
+    font-size: 11px; padding: 4px 9px; border-radius: 6px;
+    background: transparent; border: 1px solid var(--line); color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  #settingsToggle.on { color: var(--text); border-color: var(--text-dim); }
+
+  /* ---- 設定パネル(遅延時間・カメラ切替等)は既定で折りたたむ ---- */
+  #secondaryControls {
+    display: none;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+  }
+  #secondaryControls.open { display: block; }
 
   #fullscreenToggle {
     font-size: 11px; padding: 4px 9px; border-radius: 6px;
@@ -161,21 +178,39 @@
   #orientationHint .icon { font-size: 46px; transform: rotate(90deg); color: var(--accent); }
   #orientationHint p { margin: 0; color: var(--text); font-size: 16px; line-height: 1.8; }
 
+  /* ---- 全画面時：映像そのものをFullscreen APIで画面いっぱいに表示し、 ----
+     ヘッダー・フッターはFullscreen対象(#stage)の外にあるため自動的に非表示になる。
+     操作は#stage内にオーバーレイした最小限のコントロールバー(#fsControls)で行う。 */
+  #fsControls { display: none; }
+  #stage:fullscreen, #stage:-webkit-full-screen { width: 100%; height: 100%; }
+  #stage:fullscreen #fsControls,
+  #stage:-webkit-full-screen #fsControls {
+    display: flex; flex-direction: column; gap: 8px;
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 12px 16px max(12px, env(safe-area-inset-bottom));
+    background: linear-gradient(to top, rgba(10,10,8,0.85), rgba(10,10,8,0) 100%);
+  }
+  #fsExit {
+    display: none;
+    position: absolute; top: 14px; right: 14px;
+    background: rgba(21,20,15,0.72); border: 1px solid var(--line);
+    font-size: 12px; padding: 6px 12px; border-radius: 8px;
+  }
+  #stage:fullscreen #fsExit, #stage:-webkit-full-screen #fsExit { display: block; }
+
   /* ---- スロー確認中のフォーカスモード ---- */
-  /* 全画面化自体はFullscreen APIで行うが、それに加えてスロー確認中は
-     頻繁に使わない補助コントロール(遅延設定・カメラ切替等)を隠し、
+  /* スロー確認中は、頻繁に使わない補助コントロール(遅延設定・カメラ切替等)を隠し、
      映像とスロー操作に必要なボタンだけを残す。 */
   #app.focus-mode #secondaryControls { display: none; }
-  #app.focus-mode footer { padding-top: 10px; }
-  #app.focus-mode #slowCheck { font-size: 18px; padding: 16px; }
-  #app.focus-mode .row + .row { margin-top: 8px; }
+  #app.focus-mode #settingsToggle { display: none; }
+  #app.focus-mode .act-slow-check { font-size: 16px; padding: 12px; }
 
   /* ---- 一定時間操作がない場合、UIを薄くする(タップで再表示) ---- */
-  #app.ui-dim header, #app.ui-dim footer {
+  #app.ui-dim header, #app.ui-dim footer, #app.ui-dim #fsControls {
     opacity: 0.18;
     transition: opacity 0.4s ease;
   }
-  header, footer { transition: opacity 0.25s ease; }
+  header, footer, #fsControls { transition: opacity 0.25s ease; }
 </style>
 </head>
 <body>
@@ -203,24 +238,36 @@
       <p id="stageMessageText">カメラへのアクセスを準備しています…</p>
       <div id="diagLine"></div>
     </div>
+
+    <!-- 全画面時のみ表示される最小限のオーバーレイ操作パネル -->
+    <button id="fsExit">全画面終了</button>
+    <div id="fsControls">
+      <div class="row">
+        <button class="act-seek-back wide">5秒戻る</button>
+        <button class="act-slow-check primary grow2">スロー確認</button>
+        <button class="act-seek-fwd wide">5秒進む</button>
+      </div>
+      <div class="row">
+        <button class="act-play-pause wide">一時停止</button>
+        <button class="act-go-live secondary-action wide">現在へ</button>
+      </div>
+    </div>
   </div>
 
   <footer>
-    <div class="label">再生コントロール</div>
     <div class="row">
-      <button id="seekBack" class="wide">5秒戻る</button>
-      <button id="playPause" class="wide">再生／停止</button>
-      <button id="seekForward" class="wide">5秒進む</button>
+      <button class="act-seek-back wide">5秒戻る</button>
+      <button class="act-slow-check primary grow2">スロー確認</button>
+      <button class="act-seek-fwd wide">5秒進む</button>
     </div>
     <div class="row">
-      <button id="slowCheck" class="primary wide">スロー確認</button>
-    </div>
-    <div class="row">
-      <button id="goLive" class="secondary-action wide">現在へ</button>
+      <button class="act-play-pause wide">一時停止</button>
+      <button class="act-go-live secondary-action wide">現在へ</button>
+      <button id="settingsToggle">設定</button>
     </div>
 
     <div id="secondaryControls">
-      <div class="label" style="margin-top:14px">遅延時間</div>
+      <div class="label">遅延時間</div>
       <div class="row" id="delayPresets"></div>
 
       <div class="row">
@@ -232,9 +279,8 @@
         <button id="mirrorToggle" class="wide">左右反転</button>
         <button id="rotateView" class="wide">映像回転</button>
       </div>
+      <p id="privacyNote">映像は端末内でのみ処理され、外部には送信・保存されません。</p>
     </div>
-
-    <p id="privacyNote">映像は端末内でのみ処理され、外部には送信・保存されません。</p>
   </footer>
 </div>
 
@@ -306,11 +352,17 @@
   const orientationHint = document.getElementById("orientationHint");
   const rotateViewBtn = document.getElementById("rotateView");
   const appEl = document.getElementById("app");
-  const seekBackBtn = document.getElementById("seekBack");
-  const seekForwardBtn = document.getElementById("seekForward");
-  const playPauseBtn = document.getElementById("playPause");
-  const slowCheckBtn = document.getElementById("slowCheck");
-  const goLiveBtn = document.getElementById("goLive");
+  const stageEl = document.getElementById("stage");
+  const fsExitBtn = document.getElementById("fsExit");
+  const settingsToggleBtn = document.getElementById("settingsToggle");
+  const secondaryControls = document.getElementById("secondaryControls");
+  // 通常フッターと全画面オーバーレイの両方に同じ操作ボタンが存在するため、
+  // idではなくクラスで一括取得し、両方に同じ挙動・同じ表示更新を適用する。
+  const seekBackBtns = document.querySelectorAll(".act-seek-back");
+  const seekForwardBtns = document.querySelectorAll(".act-seek-fwd");
+  const playPauseBtns = document.querySelectorAll(".act-play-pause");
+  const slowCheckBtns = document.querySelectorAll(".act-slow-check");
+  const goLiveBtns = document.querySelectorAll(".act-go-live");
 
   const bufferCanvas = document.createElement("canvas");
   const bufferCtx = bufferCanvas.getContext("2d", { alpha: false });
@@ -391,26 +443,36 @@
   });
 
   // ---- 全画面表示 ----
+  // #stage自体をFullscreen対象にすることで、header/footerはそのままDOM外(=非表示)として扱われ、
+  // 映像がビューポート全体を占める。操作は#stage内の#fsControlsオーバーレイで行う。
   function updateFullscreenButton() {
     const isFs = !!document.fullscreenElement;
     fullscreenToggleBtn.textContent = isFs ? "全画面終了" : "全画面";
     fullscreenToggleBtn.classList.toggle("on", isFs);
   }
+  function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    } else {
+      stageEl.requestFullscreen().catch(() => {
+        // 一部環境ではユーザー操作起点でも拒否されることがある。UIは変更せず静かに諦める。
+      });
+    }
+  }
   if (!document.fullscreenEnabled) {
     fullscreenToggleBtn.disabled = true;
     fullscreenToggleBtn.textContent = "全画面非対応";
   } else {
-    fullscreenToggleBtn.addEventListener("click", () => {
-      if (document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {});
-      } else {
-        appEl.requestFullscreen().catch(() => {
-          // 一部環境ではユーザー操作起点でも拒否されることがある。UIは変更せず静かに諦める。
-        });
-      }
-    });
+    fullscreenToggleBtn.addEventListener("click", toggleFullscreen);
+    fsExitBtn.addEventListener("click", toggleFullscreen);
     document.addEventListener("fullscreenchange", updateFullscreenButton);
   }
+
+  // ---- 設定パネル(遅延時間・カメラ切替等)の開閉 ----
+  settingsToggleBtn.addEventListener("click", () => {
+    const open = secondaryControls.classList.toggle("open");
+    settingsToggleBtn.classList.toggle("on", open);
+  });
 
   // ---- 一定時間操作がなければUIを薄くする(操作UIをタップすると再表示) ----
   const UI_IDLE_MS = 4000;
@@ -432,18 +494,23 @@
   });
 
   // ---- 再生コントロール（Playback Engineの状態を操作するだけ。frameBufferには触れない）----
-  seekBackBtn.addEventListener("click", () => playback.seekBy(-SEEK_STEP_SEC));
-  seekForwardBtn.addEventListener("click", () => playback.seekBy(SEEK_STEP_SEC));
-  goLiveBtn.addEventListener("click", () => playback.goLive());
-  slowCheckBtn.addEventListener("click", () => playback.playRecentWindow(SLOW_WINDOW_SEC, SLOW_RATE));
-  playPauseBtn.addEventListener("click", () => {
-    const label = playback.getStateLabel();
-    if (label === "PAUSE" || label === "SLOW_PAUSED") {
-      playback.resume();
-    } else {
-      playback.pause();
-    }
-  });
+  // 通常フッターと全画面オーバーレイの両方のボタンに同じ挙動を割り当てる。
+  seekBackBtns.forEach((btn) => btn.addEventListener("click", () => playback.seekBy(-SEEK_STEP_SEC)));
+  seekForwardBtns.forEach((btn) => btn.addEventListener("click", () => playback.seekBy(SEEK_STEP_SEC)));
+  goLiveBtns.forEach((btn) => btn.addEventListener("click", () => playback.goLive()));
+  slowCheckBtns.forEach((btn) =>
+    btn.addEventListener("click", () => playback.playRecentWindow(SLOW_WINDOW_SEC, SLOW_RATE))
+  );
+  playPauseBtns.forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const label = playback.getStateLabel();
+      if (label === "PAUSE" || label === "SLOW_PAUSED") {
+        playback.resume();
+      } else {
+        playback.pause();
+      }
+    })
+  );
 
   // ---- バッファ全クリア（カメラ切替・再起動時）----
   function clearBuffer() {
@@ -704,8 +771,9 @@
     const label = playback.getStateLabel();
     setStatus(STATE_LABEL_JA[label] || label, label === "DELAY");
     slowIndicator.style.display = label === "SLOW" || label === "SLOW_PAUSED" ? "block" : "none";
-    playPauseBtn.textContent = label === "PAUSE" || label === "SLOW_PAUSED" ? "再生" : "一時停止";
-    goLiveBtn.disabled = label === "DELAY";
+    const playPauseText = label === "PAUSE" || label === "SLOW_PAUSED" ? "再生" : "一時停止";
+    playPauseBtns.forEach((btn) => (btn.textContent = playPauseText));
+    goLiveBtns.forEach((btn) => (btn.disabled = label === "DELAY"));
     // スロー確認中は、映像確認に集中できるよう補助コントロールを自動的に隠す
     appEl.classList.toggle("focus-mode", label === "SLOW" || label === "SLOW_PAUSED");
   }
