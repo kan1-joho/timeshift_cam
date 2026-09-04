@@ -143,6 +143,39 @@
     pointer-events: none;
   }
   #privacyNote { font-size: 11px; color: var(--text-dim); text-align: center; margin: 10px 0 0; line-height: 1.6; }
+
+  #fullscreenToggle {
+    font-size: 11px; padding: 4px 9px; border-radius: 6px;
+    background: transparent; border: 1px solid var(--line); color: var(--text-dim);
+  }
+  #fullscreenToggle.on { color: var(--ok); border-color: var(--ok); }
+
+  #orientationHint {
+    position: fixed; inset: 0; z-index: 50;
+    background: var(--bg);
+    display: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+    text-align: center; padding: 24px;
+  }
+  #orientationHint.show { display: flex; }
+  #orientationHint .icon { font-size: 46px; transform: rotate(90deg); color: var(--accent); }
+  #orientationHint p { margin: 0; color: var(--text); font-size: 16px; line-height: 1.8; }
+
+  /* ---- スロー確認中のフォーカスモード ---- */
+  /* 全画面化自体はFullscreen APIで行うが、それに加えてスロー確認中は
+     頻繁に使わない補助コントロール(遅延設定・カメラ切替等)を隠し、
+     映像とスロー操作に必要なボタンだけを残す。 */
+  #app.focus-mode #secondaryControls { display: none; }
+  #app.focus-mode footer { padding-top: 10px; }
+  #app.focus-mode #slowCheck { font-size: 18px; padding: 16px; }
+  #app.focus-mode .row + .row { margin-top: 8px; }
+
+  /* ---- 一定時間操作がない場合、UIを薄くする(タップで再表示) ---- */
+  #app.ui-dim header, #app.ui-dim footer {
+    opacity: 0.18;
+    transition: opacity 0.4s ease;
+  }
+  header, footer { transition: opacity 0.25s ease; }
 </style>
 </head>
 <body>
@@ -151,9 +184,15 @@
     <h1>射タイムシフトカメラ</h1>
     <div id="headerRight">
       <span id="status">起動中…</span>
+      <button id="fullscreenToggle">全画面</button>
       <button id="debugToggle">デバッグ</button>
     </div>
   </header>
+
+  <div id="orientationHint">
+    <div class="icon">⟳</div>
+    <p>デバイスを横向きにしてご使用ください</p>
+  </div>
 
   <div id="stage">
     <canvas id="displayCanvas"></canvas>
@@ -180,14 +219,19 @@
       <button id="goLive" class="secondary-action wide">現在へ</button>
     </div>
 
-    <div class="label" style="margin-top:14px">遅延時間</div>
-    <div class="row" id="delayPresets"></div>
+    <div id="secondaryControls">
+      <div class="label" style="margin-top:14px">遅延時間</div>
+      <div class="row" id="delayPresets"></div>
 
-    <div class="row">
-      <button id="minusOne" class="adjust">−1秒</button>
-      <button id="plusOne" class="adjust">＋1秒</button>
-      <button id="flipCamera" class="wide">カメラ切替</button>
-      <button id="mirrorToggle" class="wide">左右反転</button>
+      <div class="row">
+        <button id="minusOne" class="adjust">−1秒</button>
+        <button id="plusOne" class="adjust">＋1秒</button>
+        <button id="flipCamera" class="wide">カメラ切替</button>
+      </div>
+      <div class="row">
+        <button id="mirrorToggle" class="wide">左右反転</button>
+        <button id="rotateView" class="wide">映像回転</button>
+      </div>
     </div>
 
     <p id="privacyNote">映像は端末内でのみ処理され、外部には送信・保存されません。</p>
@@ -258,6 +302,10 @@
   const mirrorBtn = document.getElementById("mirrorToggle");
   const debugToggleBtn = document.getElementById("debugToggle");
   const debugPanel = document.getElementById("debugPanel");
+  const fullscreenToggleBtn = document.getElementById("fullscreenToggle");
+  const orientationHint = document.getElementById("orientationHint");
+  const rotateViewBtn = document.getElementById("rotateView");
+  const appEl = document.getElementById("app");
   const seekBackBtn = document.getElementById("seekBack");
   const seekForwardBtn = document.getElementById("seekForward");
   const playPauseBtn = document.getElementById("playPause");
@@ -341,6 +389,41 @@
     debugToggleBtn.classList.toggle("on", debugMode);
     debugPanel.style.display = debugMode ? "block" : "none";
   });
+
+  // ---- 全画面表示 ----
+  function updateFullscreenButton() {
+    const isFs = !!document.fullscreenElement;
+    fullscreenToggleBtn.textContent = isFs ? "全画面終了" : "全画面";
+    fullscreenToggleBtn.classList.toggle("on", isFs);
+  }
+  if (!document.fullscreenEnabled) {
+    fullscreenToggleBtn.disabled = true;
+    fullscreenToggleBtn.textContent = "全画面非対応";
+  } else {
+    fullscreenToggleBtn.addEventListener("click", () => {
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      } else {
+        appEl.requestFullscreen().catch(() => {
+          // 一部環境ではユーザー操作起点でも拒否されることがある。UIは変更せず静かに諦める。
+        });
+      }
+    });
+    document.addEventListener("fullscreenchange", updateFullscreenButton);
+  }
+
+  // ---- 一定時間操作がなければUIを薄くする(操作UIをタップすると再表示) ----
+  const UI_IDLE_MS = 4000;
+  let idleTimer = null;
+  function resetIdleTimer() {
+    appEl.classList.remove("ui-dim");
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      appEl.classList.add("ui-dim");
+    }, UI_IDLE_MS);
+  }
+  appEl.addEventListener("pointerdown", resetIdleTimer);
+  resetIdleTimer();
 
   flipBtn.addEventListener("click", async () => {
     facingMode = facingMode === "environment" ? "user" : "environment";
@@ -438,20 +521,101 @@
     sourceVideo.srcObject = stream;
     await sourceVideo.play().catch(() => {});
 
-    const track = stream.getVideoTracks()[0];
-    const settings = track.getSettings ? track.getSettings() : {};
-    const srcW = settings.width || sourceVideo.videoWidth || 1280;
-    const srcH = settings.height || sourceVideo.videoHeight || 720;
-    const scale = BUFFER_SCALE_WIDTH / srcW;
-    bufferCanvas.width = Math.round(srcW * scale);
-    bufferCanvas.height = Math.round(srcH * scale);
-    displayCanvas.width = srcW;
-    displayCanvas.height = srcH;
+    applyOrientation();
 
     setMessage("");
     setStatus("LIVE（遅延中）", true);
     running = true;
   }
+
+  // ---- 映像の向き補正 ----
+  // iOS Safariでは、<video>要素は自動的に正しい向きで表示されるが、
+  // CanvasへdrawImage()した場合はカメラセンサーの素の向き(多くは縦長)のまま
+  // 描画されてしまうことがある。ここでは「カメラのネイティブ解像度の向き」と
+  // 「デバイス(ウィンドウ)の向き」を比較し、ズレていれば90°回転して補正する。
+  // 自動判定の回転方向が実機で逆だった場合に備え、ユーザーが手動で90°ずつ
+  // 追加調整できるようにし、その値はlocalStorageに保存する。
+  let currentRotation = 0; // 実際に適用中の回転角(0/90/180/270)
+  let manualRotationOffset = Number(localStorage.getItem("manualRotationOffset")) || 0;
+
+  function computeBaseRotation(srcW, srcH) {
+    const videoIsLandscape = srcW >= srcH;
+    const windowIsLandscape = window.innerWidth >= window.innerHeight;
+    return videoIsLandscape === windowIsLandscape ? 0 : 90;
+  }
+
+  function applyOrientation() {
+    if (!stream) return;
+    const track = stream.getVideoTracks()[0];
+    if (!track) return;
+    const settings = track.getSettings ? track.getSettings() : {};
+    const srcW = settings.width || sourceVideo.videoWidth || 1280;
+    const srcH = settings.height || sourceVideo.videoHeight || 720;
+
+    const base = computeBaseRotation(srcW, srcH);
+    const rotation = (base + manualRotationOffset + 360) % 360;
+    const swapped = rotation === 90 || rotation === 270;
+    const outW = swapped ? srcH : srcW;
+    const outH = swapped ? srcW : srcH;
+
+    const sizeChanged = outW !== displayCanvas.width || outH !== displayCanvas.height;
+    if (rotation !== currentRotation || sizeChanged) {
+      currentRotation = rotation;
+      const scale = BUFFER_SCALE_WIDTH / outW;
+      bufferCanvas.width = Math.round(outW * scale);
+      bufferCanvas.height = Math.round(outH * scale);
+      displayCanvas.width = outW;
+      displayCanvas.height = outH;
+      // 向き・サイズが変わると既存バッファの内容と整合しなくなるため破棄する
+      clearBuffer();
+      playback.goLive();
+    }
+  }
+
+  // videoソースをrotationDeg分回転させてctx(出力サイズoutW×outH)へ描画する
+  function drawRotatedFrame(ctx, source, rotationDeg, outW, outH) {
+    ctx.save();
+    switch (rotationDeg) {
+      case 90:
+        ctx.translate(outW, 0);
+        ctx.rotate(Math.PI / 2);
+        ctx.drawImage(source, 0, 0, outH, outW);
+        break;
+      case 180:
+        ctx.translate(outW, outH);
+        ctx.rotate(Math.PI);
+        ctx.drawImage(source, 0, 0, outW, outH);
+        break;
+      case 270:
+        ctx.translate(0, outH);
+        ctx.rotate(-Math.PI / 2);
+        ctx.drawImage(source, 0, 0, outH, outW);
+        break;
+      default:
+        ctx.drawImage(source, 0, 0, outW, outH);
+    }
+    ctx.restore();
+  }
+
+  rotateViewBtn.addEventListener("click", () => {
+    manualRotationOffset = (manualRotationOffset + 90) % 360;
+    localStorage.setItem("manualRotationOffset", String(manualRotationOffset));
+    applyOrientation();
+  });
+
+  // デバイスの向きが変わったら再計算する(ネイティブ解像度は変わらないため、
+  // ウィンドウ寸法との比較結果だけが変化する)
+  window.addEventListener("resize", () => applyOrientation());
+  window.addEventListener("orientationchange", () => applyOrientation());
+
+  // ---- 横向き案内 ----
+  function updateOrientationHint() {
+    const isPortrait = window.innerHeight > window.innerWidth;
+    orientationHint.classList.toggle("show", isPortrait);
+  }
+  window.addEventListener("resize", updateOrientationHint);
+  window.addEventListener("orientationchange", updateOrientationHint);
+  updateOrientationHint();
 
   // ---- time昇順を保った挿入・時刻検索は bufferEngine.js の共通実装を利用 ----
   // (ブラウザ実装とテストコードでロジックが乖離しないようにするため)
@@ -464,7 +628,7 @@
     lastCaptureTime = now;
 
     const myGeneration = cameraGeneration;
-    bufferCtx.drawImage(sourceVideo, 0, 0, bufferCanvas.width, bufferCanvas.height);
+    drawRotatedFrame(bufferCtx, sourceVideo, currentRotation, bufferCanvas.width, bufferCanvas.height);
 
     pendingBitmapCount++;
     createImageBitmap(bufferCanvas)
@@ -542,6 +706,8 @@
     slowIndicator.style.display = label === "SLOW" || label === "SLOW_PAUSED" ? "block" : "none";
     playPauseBtn.textContent = label === "PAUSE" || label === "SLOW_PAUSED" ? "再生" : "一時停止";
     goLiveBtn.disabled = label === "DELAY";
+    // スロー確認中は、映像確認に集中できるよう補助コントロールを自動的に隠す
+    appEl.classList.toggle("focus-mode", label === "SLOW" || label === "SLOW_PAUSED");
   }
 
   // ---- デバッグ表示 ----
