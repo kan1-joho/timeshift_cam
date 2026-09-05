@@ -135,9 +135,12 @@
   }
   button.primary:active { background: var(--accent-dim); }
   button.secondary-action {
-    background: transparent; border: 1px solid var(--text-dim); color: var(--text);
+    background: transparent; border: 1px solid var(--ok); color: var(--ok);
     padding: 8px 14px; font-size: 13px; font-weight: 600;
   }
+  /* 5秒戻る(使用頻度が高い)を5秒進むより明確に大きく・濃くする */
+  button.seek-major { flex: 1.3; font-weight: 600; }
+  button.seek-minor { flex: 0.7; font-size: 11px; color: var(--text-dim); }
   button:disabled { opacity: 0.4; }
   #slowIndicator {
     position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
@@ -152,9 +155,9 @@
   #settingsToggle {
     font-size: 11px; padding: 4px 9px; border-radius: 6px;
     background: transparent; border: 1px solid var(--line); color: var(--text-dim);
-    flex-shrink: 0;
   }
   #settingsToggle.on { color: var(--text); border-color: var(--text-dim); }
+  .hint-note { font-size: 10px; color: var(--text-dim); margin: 8px 0 0; line-height: 1.6; }
 
   /* ---- 設定パネル(遅延時間・カメラ切替等)は既定で折りたたむ ---- */
   #secondaryControls {
@@ -220,8 +223,7 @@
   /* スロー確認中は、頻繁に使わない補助コントロール(遅延設定・カメラ切替等)を隠し、
      映像とスロー操作に必要なボタンだけを残す。 */
   #app.focus-mode #secondaryControls { display: none; }
-  #app.focus-mode #settingsToggle { display: none; }
-  #app.focus-mode .act-slow-check { font-size: 16px; padding: 12px; }
+  #app.focus-mode .act-slow-check { display: none; }
 
   /* ---- 一定時間操作がない場合、UIを薄くする(タップで再表示) ---- */
   #app.ui-dim header, #app.ui-dim footer, #app.ui-dim #fsControls {
@@ -237,6 +239,7 @@
     <h1>射タイムシフトカメラ</h1>
     <div id="headerRight">
       <span id="status">起動中…</span>
+      <button id="settingsToggle">設定</button>
       <button id="fullscreenToggle">全画面</button>
       <button id="debugToggle">デバッグ</button>
     </div>
@@ -261,9 +264,9 @@
     <button id="fsExit">全画面終了</button>
     <div id="fsControls">
       <div class="row">
-        <button class="act-seek-back wide">5秒戻る</button>
+        <button class="act-seek-back seek-major">5秒戻る</button>
         <button class="act-slow-check primary grow2">スロー確認</button>
-        <button class="act-seek-fwd wide">5秒進む</button>
+        <button class="act-seek-fwd seek-minor">5秒進む</button>
       </div>
       <div class="row">
         <button class="act-play-pause wide">一時停止</button>
@@ -274,14 +277,13 @@
 
   <footer>
     <div class="row">
-      <button class="act-seek-back wide">5秒戻る</button>
+      <button class="act-seek-back seek-major">5秒戻る</button>
       <button class="act-slow-check primary grow2">スロー確認</button>
-      <button class="act-seek-fwd wide">5秒進む</button>
+      <button class="act-seek-fwd seek-minor">5秒進む</button>
     </div>
     <div class="row">
       <button class="act-play-pause wide">一時停止</button>
       <button class="act-go-live secondary-action wide">現在へ</button>
-      <button id="settingsToggle">設定</button>
     </div>
 
     <div id="secondaryControls">
@@ -297,6 +299,7 @@
         <button id="mirrorToggle" class="wide">左右反転</button>
         <button id="rotateView" class="wide">映像回転</button>
       </div>
+      <p class="hint-note">「現在へ」は設定した遅延時間を維持したまま、通常の遅延再生位置に戻ります（リアルタイム映像ではありません）。</p>
       <p id="privacyNote">映像は端末内でのみ処理され、外部には送信・保存されません。</p>
     </div>
   </footer>
@@ -493,8 +496,11 @@
   });
 
   // ---- 一定時間操作がなければUIを薄くする(操作UIをタップすると再表示) ----
+  // 「薄い状態での最初のタップ」は再表示だけを行い、そのタップでボタンの動作までは
+  // 実行させない(誤操作防止)。2回目以降のタップは通常どおり動作する。
   const UI_IDLE_MS = 4000;
   let idleTimer = null;
+  let suppressNextClick = false;
   function resetIdleTimer() {
     appEl.classList.remove("ui-dim");
     if (idleTimer) clearTimeout(idleTimer);
@@ -502,7 +508,24 @@
       appEl.classList.add("ui-dim");
     }, UI_IDLE_MS);
   }
-  appEl.addEventListener("pointerdown", resetIdleTimer);
+  function handlePointerDownForIdle() {
+    if (appEl.classList.contains("ui-dim")) {
+      suppressNextClick = true; // このあとに来るclickは再表示専用として無効化する
+    }
+    resetIdleTimer();
+  }
+  function handleClickForIdle(e) {
+    if (suppressNextClick) {
+      suppressNextClick = false;
+      e.preventDefault();
+      e.stopPropagation(); // ボタン自身のclickハンドラに到達させない
+    }
+  }
+  // キャプチャフェーズで登録することで、ボタン自身のclickハンドラより先に実行させる
+  [document.querySelector("header"), document.querySelector("footer"), stageEl].forEach((el) => {
+    el.addEventListener("pointerdown", handlePointerDownForIdle, true);
+    el.addEventListener("click", handleClickForIdle, true);
+  });
   resetIdleTimer();
 
   flipBtn.addEventListener("click", async () => {
