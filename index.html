@@ -3,6 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="射タイムシフトカメラ">
 <title>射タイムシフトカメラ</title>
 <style>
   :root {
@@ -180,9 +184,23 @@
 
   /* ---- 全画面時：映像そのものをFullscreen APIで画面いっぱいに表示し、 ----
      ヘッダー・フッターはFullscreen対象(#stage)の外にあるため自動的に非表示になる。
-     操作は#stage内にオーバーレイした最小限のコントロールバー(#fsControls)で行う。 */
+     操作は#stage内にオーバーレイした最小限のコントロールバー(#fsControls)で行う。
+     親要素のflexレイアウトの影響を受けないよう、position/sizeを強めに上書きする。 */
   #fsControls { display: none; }
-  #stage:fullscreen, #stage:-webkit-full-screen { width: 100%; height: 100%; }
+  #stage:fullscreen, #stage:-webkit-full-screen {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100dvh !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
+    background: #000;
+    z-index: 2147483647;
+  }
+  #stage:fullscreen #displayCanvas, #stage:-webkit-full-screen #displayCanvas {
+    width: 100%; height: 100%;
+  }
   #stage:fullscreen #fsControls,
   #stage:-webkit-full-screen #fsControls {
     display: flex; flex-direction: column; gap: 8px;
@@ -598,17 +616,33 @@
   // ---- 映像の向き補正 ----
   // iOS Safariでは、<video>要素は自動的に正しい向きで表示されるが、
   // CanvasへdrawImage()した場合はカメラセンサーの素の向き(多くは縦長)のまま
-  // 描画されてしまうことがある。ここでは「カメラのネイティブ解像度の向き」と
-  // 「デバイス(ウィンドウ)の向き」を比較し、ズレていれば90°回転して補正する。
-  // 自動判定の回転方向が実機で逆だった場合に備え、ユーザーが手動で90°ずつ
-  // 追加調整できるようにし、その値はlocalStorageに保存する。
+  // 描画されてしまうことがある。
+  //
+  // 「映像が横長か縦長か」と「画面が横長か縦長か」を比較するだけの判定では、
+  // 横長と横長(向かい合う2方向)や縦長と縦長(向かい合う2方向)を区別できず、
+  // デバイスを180°回転(左右持ち替え)した際に向きがズレたまま検知できない、
+  // という不具合があった。そのため、screen.orientation.angle（0/90/180/270°の
+  // 実際の画面角度）を直接使う方式に変更する。
+  //
+  // sensorOffsetDeg は「画面角度が0°のときに映像を正しい向きにするための
+  // 固定の補正値」であり、端末・カメラの個体差を表す。これはユーザーが
+  // 「映像回転」ボタンで一度調整すれば、以後はどの向きに回転させても
+  // (screen.orientation.angleを毎回足し引きするだけなので)正しく追従する。
   let currentRotation = 0; // 実際に適用中の回転角(0/90/180/270)
-  let manualRotationOffset = Number(localStorage.getItem("manualRotationOffset")) || 0;
+  let sensorOffsetDeg = Number(localStorage.getItem("sensorOffsetDeg")) || 0;
 
-  function computeBaseRotation(srcW, srcH) {
-    const videoIsLandscape = srcW >= srcH;
-    const windowIsLandscape = window.innerWidth >= window.innerHeight;
-    return videoIsLandscape === windowIsLandscape ? 0 : 90;
+  function getScreenAngle() {
+    if (screen.orientation && typeof screen.orientation.angle === "number") {
+      return screen.orientation.angle;
+    }
+    if (typeof window.orientation === "number") {
+      return ((window.orientation % 360) + 360) % 360;
+    }
+    return 0;
+  }
+
+  function computeRotation() {
+    return ((sensorOffsetDeg + getScreenAngle()) % 360 + 360) % 360;
   }
 
   function applyOrientation() {
@@ -619,8 +653,7 @@
     const srcW = settings.width || sourceVideo.videoWidth || 1280;
     const srcH = settings.height || sourceVideo.videoHeight || 720;
 
-    const base = computeBaseRotation(srcW, srcH);
-    const rotation = (base + manualRotationOffset + 360) % 360;
+    const rotation = computeRotation();
     const swapped = rotation === 90 || rotation === 270;
     const outW = swapped ? srcH : srcW;
     const outH = swapped ? srcW : srcH;
@@ -665,15 +698,19 @@
   }
 
   rotateViewBtn.addEventListener("click", () => {
-    manualRotationOffset = (manualRotationOffset + 90) % 360;
-    localStorage.setItem("manualRotationOffset", String(manualRotationOffset));
+    // sensorOffsetDegは画面角度に依存しない固定値として保存するため、
+    // ここで一度直せば、以後どの向きに回転させても正しく追従する。
+    sensorOffsetDeg = (sensorOffsetDeg + 90) % 360;
+    localStorage.setItem("sensorOffsetDeg", String(sensorOffsetDeg));
     applyOrientation();
   });
 
-  // デバイスの向きが変わったら再計算する(ネイティブ解像度は変わらないため、
-  // ウィンドウ寸法との比較結果だけが変化する)
+  // デバイスの向きが変わったら再計算する
   window.addEventListener("resize", () => applyOrientation());
   window.addEventListener("orientationchange", () => applyOrientation());
+  if (screen.orientation && screen.orientation.addEventListener) {
+    screen.orientation.addEventListener("change", () => applyOrientation());
+  }
 
   // ---- 横向き案内 ----
   function updateOrientationHint() {
