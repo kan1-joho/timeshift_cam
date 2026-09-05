@@ -89,6 +89,27 @@
       return this.mode === MODE_FOLLOW;
     }
 
+    /**
+     * 指定した絶対時刻へplaybackTimeを直接移動する(1フレーム戻る/進むで使用)。
+     * seekBy()と異なり、スロー区間の情報(_slowEndTime/_slowRate)には触れない。
+     * モード遷移(manualへ)と範囲クランプだけを行う、フレーム単位移動のための薄いプリミティブ。
+     */
+    seekToTime(targetTime) {
+      this._enterManual();
+      this.playbackTime = targetTime;
+      if (this._lastOldest != null && this.playbackTime < this._lastOldest) {
+        this.playbackTime = this._lastOldest;
+      }
+      if (this._lastNewestAllowed != null && this.playbackTime > this._lastNewestAllowed) {
+        this.playbackTime = this._lastNewestAllowed;
+      }
+    }
+
+    /** 直近のupdate()時点での「これより先には進めない」境界時刻(nowMs - delaySeconds*1000)を返す */
+    getNewestAllowed() {
+      return this._lastNewestAllowed;
+    }
+
     /** 一時停止：現在位置で停止する（スロー再生中の場合、スロー区間の情報は維持する） */
     pause() {
       this._enterManual();

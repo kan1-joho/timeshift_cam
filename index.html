@@ -185,12 +185,14 @@
   #orientationHint .icon { font-size: 46px; transform: rotate(90deg); color: var(--accent); }
   #orientationHint p { margin: 0; color: var(--text); font-size: 16px; line-height: 1.8; }
 
-  /* ---- 全画面時：映像そのものをFullscreen APIで画面いっぱいに表示し、 ----
-     ヘッダー・フッターはFullscreen対象(#stage)の外にあるため自動的に非表示になる。
+  /* ---- 全画面時：映像そのものを画面いっぱいに表示し、 ----
+     ヘッダー・フッターは非表示になる。
      操作は#stage内にオーバーレイした最小限のコントロールバー(#fsControls)で行う。
-     親要素のflexレイアウトの影響を受けないよう、position/sizeを強めに上書きする。 */
+     親要素のflexレイアウトの影響を受けないよう、position/sizeを強めに上書きする。
+     ネイティブFullscreen API(:fullscreen)と、standalone起動時などのCSSフォールバック
+     (#app.pseudo-fullscreen)の両方に同じスタイルを適用する。 */
   #fsControls { display: none; }
-  #stage:fullscreen, #stage:-webkit-full-screen {
+  #stage:fullscreen, #stage:-webkit-full-screen, #app.pseudo-fullscreen #stage {
     position: fixed !important;
     inset: 0 !important;
     width: 100vw !important;
@@ -201,11 +203,13 @@
     background: #000;
     z-index: 2147483647;
   }
-  #stage:fullscreen #displayCanvas, #stage:-webkit-full-screen #displayCanvas {
+  #stage:fullscreen #displayCanvas, #stage:-webkit-full-screen #displayCanvas,
+  #app.pseudo-fullscreen #stage #displayCanvas {
     width: 100%; height: 100%;
   }
   #stage:fullscreen #fsControls,
-  #stage:-webkit-full-screen #fsControls {
+  #stage:-webkit-full-screen #fsControls,
+  #app.pseudo-fullscreen #fsControls {
     display: flex; flex-direction: column; gap: 8px;
     position: absolute; left: 0; right: 0; bottom: 0;
     padding: 12px 16px max(12px, env(safe-area-inset-bottom));
@@ -217,7 +221,11 @@
     background: rgba(21,20,15,0.72); border: 1px solid var(--line);
     font-size: 12px; padding: 6px 12px; border-radius: 8px;
   }
-  #stage:fullscreen #fsExit, #stage:-webkit-full-screen #fsExit { display: block; }
+  #stage:fullscreen #fsExit, #stage:-webkit-full-screen #fsExit,
+  #app.pseudo-fullscreen #fsExit { display: block; }
+  /* pseudo-fullscreen時はheader/footer自体をDOM上も隠す(ネイティブFullscreenは対象外なので自動では隠れない) */
+  #app.pseudo-fullscreen header, #app.pseudo-fullscreen footer { display: none; }
+
 
   /* ---- スロー確認中のフォーカスモード ---- */
   /* スロー確認中は、頻繁に使わない補助コントロール(遅延設定・カメラ切替等)を隠し、
@@ -299,6 +307,19 @@
         <button id="mirrorToggle" class="wide">左右反転</button>
         <button id="rotateView" class="wide">映像回転</button>
       </div>
+
+      <div class="label" style="margin-top:14px">スロー速度</div>
+      <div class="row" id="slowRatePresets"></div>
+
+      <div class="label" style="margin-top:10px">スロー範囲</div>
+      <div class="row" id="slowWindowPresets"></div>
+
+      <div class="label" style="margin-top:14px">コマ送り（詳細確認）</div>
+      <div class="row">
+        <button id="stepBack" class="wide">|◀ 1F</button>
+        <button id="stepForward" class="wide">1F ▶|</button>
+      </div>
+
       <p class="hint-note">「現在へ」は設定した遅延時間を維持したまま、通常の遅延再生位置に戻ります（リアルタイム映像ではありません）。</p>
       <p id="privacyNote">映像は端末内でのみ処理され、外部には送信・保存されません。</p>
     </div>
@@ -320,17 +341,23 @@
   const BUFFER_SCALE_WIDTH = 640;
   const CAPTURE_INTERVAL_MS = 1000 / 24;
   const FPS_WINDOW_MS = 2000; // 実効fps算出のための移動窓
-  const SLOW_WINDOW_SEC = 5;
-  const SLOW_RATE = 1 / 3;
+  const DEFAULT_SLOW_WINDOW_SEC = 5;
+  const DEFAULT_SLOW_RATE = 1 / 3;
+  const SLOW_WINDOW_OPTIONS = [3, 5, 10];
+  const SLOW_RATE_OPTIONS = [1 / 2, 1 / 3, 1 / 4];
+  const MAX_SLOW_WINDOW_SEC = 10; // スロー範囲として選択できる最大値(バッファ保持時間の計算に使う)
   const SEEK_STEP_SEC = 5;
-  // バッファ保持時間：最大遅延(30秒) + 「最大遅延位置からさらに5秒戻る/スロー確認する」ケースに
+  // バッファ保持時間：最大遅延(30秒) + 「最大遅延位置からさらに最大10秒のスロー確認をする」ケースに
   // 対応できるだけの余裕を持たせる
-  const BUFFER_RETENTION_SEC = MAX_DELAY_SEC + SLOW_WINDOW_SEC + 5;
+  const BUFFER_RETENTION_SEC = MAX_DELAY_SEC + MAX_SLOW_WINDOW_SEC + 5;
 
   // ---- 状態 ----
   let delaySeconds = Number(localStorage.getItem("delaySeconds")) || DEFAULT_DELAY;
   let mirrored = localStorage.getItem("mirrored") === "1";
   let facingMode = localStorage.getItem("facingMode") || "environment";
+  let slowWindowSec = Number(localStorage.getItem("slowWindowSec")) || DEFAULT_SLOW_WINDOW_SEC;
+  let slowRate = Number(localStorage.getItem("slowRate")) || DEFAULT_SLOW_RATE;
+  let activeSlowRateLabel = rateFractionLabel(slowRate); // スロー再生中の表示用(直近に開始した速度)
   let stream = null;
   let running = false;
   let lastCaptureTime = 0;
@@ -377,6 +404,10 @@
   const fsExitBtn = document.getElementById("fsExit");
   const settingsToggleBtn = document.getElementById("settingsToggle");
   const secondaryControls = document.getElementById("secondaryControls");
+  const slowRatePresetsRow = document.getElementById("slowRatePresets");
+  const slowWindowPresetsRow = document.getElementById("slowWindowPresets");
+  const stepBackBtn = document.getElementById("stepBack");
+  const stepForwardBtn = document.getElementById("stepForward");
   // 通常フッターと全画面オーバーレイの両方に同じ操作ボタンが存在するため、
   // idではなくクラスで一括取得し、両方に同じ挙動・同じ表示更新を適用する。
   const seekBackBtns = document.querySelectorAll(".act-seek-back");
@@ -387,6 +418,13 @@
 
   const bufferCanvas = document.createElement("canvas");
   const bufferCtx = bufferCanvas.getContext("2d", { alpha: false });
+
+  function rateFractionLabel(rate) {
+    if (Math.abs(rate - 1 / 2) < 0.001) return "1/2";
+    if (Math.abs(rate - 1 / 3) < 0.001) return "1/3";
+    if (Math.abs(rate - 1 / 4) < 0.001) return "1/4";
+    return rate.toFixed(2);
+  }
 
   function setStatus(text, live) {
     statusEl.textContent = text;
@@ -466,28 +504,53 @@
   // ---- 全画面表示 ----
   // #stage自体をFullscreen対象にすることで、header/footerはそのままDOM外(=非表示)として扱われ、
   // 映像がビューポート全体を占める。操作は#stage内の#fsControlsオーバーレイで行う。
+  //
+  // 既知の問題: ホーム画面に追加してstandalone起動した場合、iOS SafariではFullscreen API
+  // (Element.requestFullscreen)自体が使えない、または常に拒否されることがある
+  // (document.fullscreenEnabledがfalseになる、またはrequestFullscreen()が失敗する)。
+  // standaloneではブラウザのアドレスバー等は元々存在しないため、その場合はネイティブAPIに
+  // 頼らず、header/footerをCSSで直接隠す「疑似全画面(pseudo-fullscreen)」にフォールバックする。
+  function isStandalone() {
+    return (
+      window.navigator.standalone === true ||
+      (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches)
+    );
+  }
+  function isFullscreenActive() {
+    return !!document.fullscreenElement || appEl.classList.contains("pseudo-fullscreen");
+  }
   function updateFullscreenButton() {
-    const isFs = !!document.fullscreenElement;
+    const isFs = isFullscreenActive();
     fullscreenToggleBtn.textContent = isFs ? "全画面終了" : "全画面";
     fullscreenToggleBtn.classList.toggle("on", isFs);
+  }
+  function enterPseudoFullscreen() {
+    appEl.classList.add("pseudo-fullscreen");
+    updateFullscreenButton();
   }
   function toggleFullscreen() {
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
-    } else {
-      stageEl.requestFullscreen().catch(() => {
-        // 一部環境ではユーザー操作起点でも拒否されることがある。UIは変更せず静かに諦める。
-      });
+      return;
     }
+    if (appEl.classList.contains("pseudo-fullscreen")) {
+      appEl.classList.remove("pseudo-fullscreen");
+      updateFullscreenButton();
+      return;
+    }
+    if (isStandalone() || !document.fullscreenEnabled) {
+      // standalone起動時、またはFullscreen API自体が使えない環境ではCSSフォールバックを使う
+      enterPseudoFullscreen();
+      return;
+    }
+    stageEl.requestFullscreen().catch(() => {
+      // ユーザー操作起点でもネイティブAPIが拒否される環境がある。その場合もCSSで代替する。
+      enterPseudoFullscreen();
+    });
   }
-  if (!document.fullscreenEnabled) {
-    fullscreenToggleBtn.disabled = true;
-    fullscreenToggleBtn.textContent = "全画面非対応";
-  } else {
-    fullscreenToggleBtn.addEventListener("click", toggleFullscreen);
-    fsExitBtn.addEventListener("click", toggleFullscreen);
-    document.addEventListener("fullscreenchange", updateFullscreenButton);
-  }
+  fullscreenToggleBtn.addEventListener("click", toggleFullscreen);
+  fsExitBtn.addEventListener("click", toggleFullscreen);
+  document.addEventListener("fullscreenchange", updateFullscreenButton);
 
   // ---- 設定パネル(遅延時間・カメラ切替等)の開閉 ----
   settingsToggleBtn.addEventListener("click", () => {
@@ -528,6 +591,72 @@
   });
   resetIdleTimer();
 
+  // ---- スロー速度・スロー範囲の選択 ----
+  // Playback EngineのplayRecentWindow(windowSec, rate)は既に汎用化されているため、
+  // ここでは「選択中の値をどれにするか」を管理するだけでよい。
+  function renderSlowRatePresets() {
+    slowRatePresetsRow.innerHTML = "";
+    SLOW_RATE_OPTIONS.forEach((rate) => {
+      const b = document.createElement("button");
+      b.textContent = rateFractionLabel(rate) + "倍速";
+      b.className = Math.abs(rate - slowRate) < 0.001 ? "selected" : "";
+      b.addEventListener("click", () => setSlowRate(rate));
+      slowRatePresetsRow.appendChild(b);
+    });
+  }
+  function renderSlowWindowPresets() {
+    slowWindowPresetsRow.innerHTML = "";
+    SLOW_WINDOW_OPTIONS.forEach((sec) => {
+      const b = document.createElement("button");
+      b.textContent = sec + "秒";
+      b.className = sec === slowWindowSec ? "selected" : "";
+      b.addEventListener("click", () => setSlowWindow(sec));
+      slowWindowPresetsRow.appendChild(b);
+    });
+  }
+  function setSlowRate(rate) {
+    slowRate = rate;
+    localStorage.setItem("slowRate", String(rate));
+    renderSlowRatePresets();
+    // スロー再生中に速度を変更した場合は、その場で新しい速度に切り替える
+    // (playRecentWindowは現在のplaybackTimeを基準に再開するため、連打時と同じ仕組みで自然に反映される)
+    const label = playback.getStateLabel();
+    if (label === "SLOW" || label === "SLOW_PAUSED") {
+      playback.playRecentWindow(slowWindowSec, slowRate);
+    }
+  }
+  function setSlowWindow(sec) {
+    slowWindowSec = sec;
+    localStorage.setItem("slowWindowSec", String(sec));
+    renderSlowWindowPresets();
+    const label = playback.getStateLabel();
+    if (label === "SLOW" || label === "SLOW_PAUSED") {
+      playback.playRecentWindow(slowWindowSec, slowRate);
+    }
+  }
+
+  // ---- 1フレーム戻る／進む ----
+  // Playback Engineにframe配列を渡さない。前後の実フレーム時刻はBuffer Engineに問い合わせ、
+  // その時刻へPlayback Engineのseek Toで移動したうえで、必ずpause()し、その場に留める
+  // (スロー中ならSLOW_PAUSED、通常ならPAUSEになる。pause()はスロー区間情報を消さないため、
+  // スロー中に踏んだ場合はスロー速度・終了予定位置を保持したまま一時停止できる)。
+  function stepFrame(direction) {
+    const t =
+      direction < 0
+        ? BufferEngine.getPreviousFrameTime(frameBuffer, playback.playbackTime)
+        : BufferEngine.getNextFrameTime(frameBuffer, playback.playbackTime);
+    if (t == null) return; // バッファ範囲外: 何もしない
+    if (direction > 0) {
+      // 「現在の遅延位置」より先のフレームがバッファに存在していても、そこへは進めない
+      const bound = playback.getNewestAllowed();
+      if (bound != null && t > bound) return;
+    }
+    playback.seekToTime(t);
+    playback.pause();
+  }
+  stepBackBtn.addEventListener("click", () => stepFrame(-1));
+  stepForwardBtn.addEventListener("click", () => stepFrame(1));
+
   flipBtn.addEventListener("click", async () => {
     facingMode = facingMode === "environment" ? "user" : "environment";
     localStorage.setItem("facingMode", facingMode);
@@ -540,7 +669,7 @@
   seekForwardBtns.forEach((btn) => btn.addEventListener("click", () => playback.seekBy(SEEK_STEP_SEC)));
   goLiveBtns.forEach((btn) => btn.addEventListener("click", () => playback.goLive()));
   slowCheckBtns.forEach((btn) =>
-    btn.addEventListener("click", () => playback.playRecentWindow(SLOW_WINDOW_SEC, SLOW_RATE))
+    btn.addEventListener("click", () => playback.playRecentWindow(slowWindowSec, slowRate))
   );
   playPauseBtns.forEach((btn) =>
     btn.addEventListener("click", () => {
@@ -823,19 +952,25 @@
     DELAY: "遅延中",
     PAUSE: "一時停止",
     REPLAY: "再生中（過去）",
-    SLOW: "スロー再生 1/3x",
+    SLOW: "スロー再生中",
     SLOW_PAUSED: "スロー再生（一時停止）",
   };
 
   function updatePlaybackUI() {
     const label = playback.getStateLabel();
     setStatus(STATE_LABEL_JA[label] || label, label === "DELAY");
-    slowIndicator.style.display = label === "SLOW" || label === "SLOW_PAUSED" ? "block" : "none";
+    const isSlow = label === "SLOW" || label === "SLOW_PAUSED";
+    slowIndicator.style.display = isSlow ? "block" : "none";
+    if (isSlow) {
+      // slowRate/slowWindowSecは「直近にplayRecentWindow()へ渡した値」と常に同期しているため、
+      // Playback Engine側に速度・範囲を問い合わせるgetterを増やさずにここで参照してよい。
+      slowIndicator.textContent = "SLOW " + rateFractionLabel(slowRate) + "x (" + slowWindowSec + "s)";
+    }
     const playPauseText = label === "PAUSE" || label === "SLOW_PAUSED" ? "再生" : "一時停止";
     playPauseBtns.forEach((btn) => (btn.textContent = playPauseText));
     goLiveBtns.forEach((btn) => (btn.disabled = label === "DELAY"));
     // スロー確認中は、映像確認に集中できるよう補助コントロールを自動的に隠す
-    appEl.classList.toggle("focus-mode", label === "SLOW" || label === "SLOW_PAUSED");
+    appEl.classList.toggle("focus-mode", isSlow);
   }
 
   // ---- デバッグ表示 ----
@@ -899,6 +1034,8 @@
   // ---- 初期化 ----
   delayValueLabel.textContent = delaySeconds;
   renderPresets();
+  renderSlowRatePresets();
+  renderSlowWindowPresets();
   startCamera();
   requestAnimationFrame(loop);
 })();

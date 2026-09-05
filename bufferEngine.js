@@ -61,5 +61,50 @@
     return true;
   }
 
-  return { insertSorted, findFrameAt, findFrameAtLinear, isSortedAscending };
+  // ---- STEP8: コマ送り用のフレーム時刻問い合わせAPI ----
+  // frameBufferの内部管理方法(insertSorted/findFrameAtの実装)には一切手を加えず、
+  // 「指定時刻の前後に実際に存在するフレームの時刻」を返すだけの純粋関数として追加する。
+
+  // time未満で最大のtimeを持つインデックスの直後(=time以上の最小インデックス)を返す
+  function bisectLeft(frameBuffer, time) {
+    let lo = 0, hi = frameBuffer.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (frameBuffer[mid].time < time) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  // time以下の要素数(=timeより大きい最小インデックス)を返す
+  function bisectRight(frameBuffer, time) {
+    let lo = 0, hi = frameBuffer.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (frameBuffer[mid].time <= time) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  // 指定時刻より前に実際に存在する直前のフレーム時刻。無ければnull(=それ以上戻れない)。
+  function getPreviousFrameTime(frameBuffer, time) {
+    const idx = bisectLeft(frameBuffer, time) - 1;
+    return idx >= 0 ? frameBuffer[idx].time : null;
+  }
+
+  // 指定時刻より後に実際に存在する直後のフレーム時刻。無ければnull(=それ以上進めない)。
+  function getNextFrameTime(frameBuffer, time) {
+    const idx = bisectRight(frameBuffer, time);
+    return idx < frameBuffer.length ? frameBuffer[idx].time : null;
+  }
+
+  return {
+    insertSorted,
+    findFrameAt,
+    findFrameAtLinear,
+    isSortedAscending,
+    getPreviousFrameTime,
+    getNextFrameTime,
+  };
 });
