@@ -239,6 +239,43 @@
     transition: opacity 0.4s ease;
   }
   header, footer, #fsControls { transition: opacity 0.25s ease; }
+
+  /* ---- 保存した射の一覧 ---- */
+  #shotList { margin-top: 6px; }
+  .shot-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 8px 0; border-bottom: 1px solid var(--line);
+  }
+  .shot-item:last-child { border-bottom: none; }
+  .shot-item-info { font-size: 12px; color: var(--text); line-height: 1.5; }
+  .shot-item-info span { display: block; color: var(--text-dim); font-size: 10px; }
+  .shot-item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .shot-item-actions button { padding: 6px 10px; font-size: 11px; }
+  .shot-delete { color: var(--accent); border-color: var(--accent-dim); }
+
+  /* ---- 保存済み射の再生オーバーレイ ---- */
+  #shotReviewOverlay {
+    position: fixed; inset: 0; z-index: 999;
+    background: #000;
+    display: flex; flex-direction: column;
+  }
+  #shotReviewHeader {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: max(10px, env(safe-area-inset-top)) 14px 8px;
+    background: var(--bg-panel);
+    font-size: 13px; color: var(--text);
+  }
+  #shotReviewClose {
+    font-size: 12px; padding: 6px 12px; border-radius: 8px;
+    background: transparent; border: 1px solid var(--line); color: var(--text-dim);
+  }
+  #shotReviewCanvas {
+    flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000;
+  }
+  #shotReviewControls {
+    padding: 10px 14px max(10px, env(safe-area-inset-bottom));
+    background: var(--bg-panel);
+  }
 </style>
 </head>
 <body>
@@ -320,16 +357,45 @@
         <button id="stepForward" class="wide">1F ▶|</button>
       </div>
 
+      <div class="label" style="margin-top:14px">射の保存</div>
+      <div class="row" id="saveRangePresets"></div>
+      <div class="row">
+        <button id="saveShotBtn" class="wide primary">この射を保存</button>
+      </div>
+      <p id="saveStatus" class="hint-note" style="display:none"></p>
+
+      <div class="label" style="margin-top:14px">保存した射</div>
+      <div id="shotList" class="hint-note">まだ保存された射はありません。</div>
+
       <p class="hint-note">「現在へ」は設定した遅延時間を維持したまま、通常の遅延再生位置に戻ります（リアルタイム映像ではありません）。</p>
       <p id="privacyNote">映像は端末内でのみ処理され、外部には送信・保存されません。</p>
     </div>
   </footer>
 </div>
 
+<!-- 保存済み射の再生オーバーレイ。Buffer/Playback Engineは新設せず、
+     PlaybackEngineの別インスタンス＋BufferEngine.findFrameAtをそのまま使い回す。 -->
+<div id="shotReviewOverlay" style="display:none">
+  <div id="shotReviewHeader">
+    <span id="shotReviewTitle">射の再生</span>
+    <button id="shotReviewClose">閉じる</button>
+  </div>
+  <canvas id="shotReviewCanvas"></canvas>
+  <div id="shotReviewControls">
+    <div class="row">
+      <button id="shotStepBack" class="wide">|◀ 1F</button>
+      <button id="shotPlayPause" class="wide primary">一時停止</button>
+      <button id="shotStepForward" class="wide">1F ▶|</button>
+    </div>
+  </div>
+</div>
+
 <video id="sourceVideo" autoplay muted playsinline style="display:none"></video>
 
 <script src="bufferEngine.js"></script>
 <script src="playbackEngine.js"></script>
+<script src="storageEngine.js"></script>
+<script src="coordinateEngine.js"></script>
 <script>
 (() => {
   "use strict";
@@ -347,6 +413,10 @@
   const SLOW_RATE_OPTIONS = [1 / 2, 1 / 3, 1 / 4];
   const MAX_SLOW_WINDOW_SEC = 10; // スロー範囲として選択できる最大値(バッファ保持時間の計算に使う)
   const SEEK_STEP_SEC = 5;
+  // 射の保存範囲の選択肢は、スロー範囲(SLOW_WINDOW_OPTIONS)と同じ数値セットを共用する
+  const SAVE_RANGE_OPTIONS = SLOW_WINDOW_OPTIONS;
+  const DEFAULT_SAVE_RANGE_SEC = 10;
+  const JPEG_QUALITY = StorageEngine.DEFAULT_JPEG_QUALITY; // 0.8。将来変更する場合はstorageEngine.js側の定数を調整する
   // バッファ保持時間：最大遅延(30秒) + 「最大遅延位置からさらに最大10秒のスロー確認をする」ケースに
   // 対応できるだけの余裕を持たせる
   const BUFFER_RETENTION_SEC = MAX_DELAY_SEC + MAX_SLOW_WINDOW_SEC + 5;
@@ -357,6 +427,7 @@
   let facingMode = localStorage.getItem("facingMode") || "environment";
   let slowWindowSec = Number(localStorage.getItem("slowWindowSec")) || DEFAULT_SLOW_WINDOW_SEC;
   let slowRate = Number(localStorage.getItem("slowRate")) || DEFAULT_SLOW_RATE;
+  let saveRangeSec = Number(localStorage.getItem("saveRangeSec")) || DEFAULT_SAVE_RANGE_SEC;
   let activeSlowRateLabel = rateFractionLabel(slowRate); // スロー再生中の表示用(直近に開始した速度)
   let stream = null;
   let running = false;
@@ -408,6 +479,17 @@
   const slowWindowPresetsRow = document.getElementById("slowWindowPresets");
   const stepBackBtn = document.getElementById("stepBack");
   const stepForwardBtn = document.getElementById("stepForward");
+  const saveRangePresetsRow = document.getElementById("saveRangePresets");
+  const saveShotBtn = document.getElementById("saveShotBtn");
+  const saveStatus = document.getElementById("saveStatus");
+  const shotListEl = document.getElementById("shotList");
+  const shotReviewOverlay = document.getElementById("shotReviewOverlay");
+  const shotReviewTitle = document.getElementById("shotReviewTitle");
+  const shotReviewClose = document.getElementById("shotReviewClose");
+  const shotReviewCanvas = document.getElementById("shotReviewCanvas");
+  const shotStepBackBtn = document.getElementById("shotStepBack");
+  const shotStepForwardBtn = document.getElementById("shotStepForward");
+  const shotPlayPauseBtn = document.getElementById("shotPlayPause");
   // 通常フッターと全画面オーバーレイの両方に同じ操作ボタンが存在するため、
   // idではなくクラスで一括取得し、両方に同じ挙動・同じ表示更新を適用する。
   const seekBackBtns = document.querySelectorAll(".act-seek-back");
@@ -656,6 +738,209 @@
   }
   stepBackBtn.addEventListener("click", () => stepFrame(-1));
   stepForwardBtn.addEventListener("click", () => stepFrame(1));
+
+  // ---- 射の保存範囲の選択(スロー範囲と同じ選択肢を共有) ----
+  function renderSaveRangePresets() {
+    saveRangePresetsRow.innerHTML = "";
+    SAVE_RANGE_OPTIONS.forEach((sec) => {
+      const b = document.createElement("button");
+      b.textContent = sec + "秒";
+      b.className = sec === saveRangeSec ? "selected" : "";
+      b.addEventListener("click", () => {
+        saveRangeSec = sec;
+        localStorage.setItem("saveRangeSec", String(sec));
+        renderSaveRangePresets();
+      });
+      saveRangePresetsRow.appendChild(b);
+    });
+  }
+
+  // ---- 射の保存 ----
+  // Storage Engineへ委譲するだけ。frameBufferの配列そのものを渡すが、
+  // Storage Engine側はそれを読み取るだけで、Buffer Engineの内部管理には触れない。
+  let isSaving = false;
+  saveShotBtn.addEventListener("click", async () => {
+    if (isSaving) return;
+    isSaving = true;
+    saveShotBtn.disabled = true;
+    saveStatus.style.display = "block";
+    saveStatus.textContent = "保存中…";
+    try {
+      const meta = await StorageEngine.saveShot(frameBuffer, {
+        playbackTime: playback.playbackTime,
+        windowSec: saveRangeSec,
+        oldestAvailableTime: frameBuffer.length ? frameBuffer[0].time : null,
+        delaySecondsAtCapture: delaySeconds,
+        jpegQuality: JPEG_QUALITY,
+        onProgress: (done, total) => {
+          saveStatus.textContent = "保存中 " + done + " / " + total;
+        },
+      });
+      if (meta) {
+        saveStatus.textContent = "保存しました（" + (meta.durationMs / 1000).toFixed(1) + "秒）";
+        await refreshShotList();
+      } else {
+        saveStatus.textContent = "保存できるフレームがありませんでした。";
+      }
+    } catch (err) {
+      console.error(err);
+      saveStatus.textContent = "保存に失敗しました。";
+    } finally {
+      isSaving = false;
+      saveShotBtn.disabled = false;
+      setTimeout(() => {
+        saveStatus.style.display = "none";
+      }, 3000);
+    }
+  });
+
+  // ---- 保存した射の一覧 ----
+  function formatShotDate(ms) {
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, "0");
+    return (
+      d.getFullYear() + "/" + pad(d.getMonth() + 1) + "/" + pad(d.getDate()) +
+      " " + pad(d.getHours()) + ":" + pad(d.getMinutes())
+    );
+  }
+  async function refreshShotList() {
+    let shots = [];
+    try {
+      shots = await StorageEngine.listShots();
+    } catch (err) {
+      console.error(err);
+      shotListEl.textContent = "一覧の読み込みに失敗しました。";
+      return;
+    }
+    if (!shots.length) {
+      shotListEl.textContent = "まだ保存された射はありません。";
+      return;
+    }
+    shotListEl.innerHTML = "";
+    shots
+      .slice()
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .forEach((shot) => {
+        const item = document.createElement("div");
+        item.className = "shot-item";
+        const info = document.createElement("div");
+        info.className = "shot-item-info";
+        info.innerHTML =
+          formatShotDate(shot.createdAt) +
+          "<span>" + (shot.durationMs / 1000).toFixed(1) + "秒</span>";
+        const actions = document.createElement("div");
+        actions.className = "shot-item-actions";
+        const playBtn = document.createElement("button");
+        playBtn.textContent = "再生";
+        playBtn.addEventListener("click", () => openShotReview(shot));
+        const delBtn = document.createElement("button");
+        delBtn.textContent = "削除";
+        delBtn.className = "shot-delete";
+        delBtn.addEventListener("click", async () => {
+          delBtn.disabled = true;
+          try {
+            await StorageEngine.deleteShot(shot.id);
+            await refreshShotList();
+          } catch (err) {
+            console.error(err);
+            delBtn.disabled = false;
+          }
+        });
+        actions.appendChild(playBtn);
+        actions.appendChild(delBtn);
+        item.appendChild(info);
+        item.appendChild(actions);
+        shotListEl.appendChild(item);
+      });
+  }
+
+  // ---- 保存済み射の再生 ----
+  // 新しい「保存動画専用再生エンジン」は作らず、PlaybackEngineの別インスタンスと
+  // BufferEngine.findFrameAtをそのまま使う。ライブ側のframeBuffer/playbackとは完全に独立させる。
+  let shotFrameBuffer = null; // {time(=relTime), bitmap}配列。timeは0起点の独立した時間軸。
+  let shotDurationMs = 0;
+  let shotPlayback = null;
+  let shotReviewRafId = null;
+  const shotCtx = shotReviewCanvas.getContext("2d", { alpha: false });
+
+  async function openShotReview(shot) {
+    shotReviewTitle.textContent = formatShotDate(shot.createdAt) + "（" + (shot.durationMs / 1000).toFixed(1) + "秒）";
+    shotReviewOverlay.style.display = "flex";
+    shotReviewCanvas.width = 0; // ロード中は前の内容を残さない
+    try {
+      shotFrameBuffer = await StorageEngine.loadShotFrames(shot.id);
+    } catch (err) {
+      console.error(err);
+      closeShotReview();
+      return;
+    }
+    if (!shotFrameBuffer.length) {
+      closeShotReview();
+      return;
+    }
+    shotDurationMs = shotFrameBuffer[shotFrameBuffer.length - 1].time;
+    shotReviewCanvas.width = shotFrameBuffer[0].bitmap.width;
+    shotReviewCanvas.height = shotFrameBuffer[0].bitmap.height;
+
+    // delaySecondsに非常に大きな値を与えることで、PlaybackEngine内部のnewestAllowed
+    // (nowMs - delaySeconds*1000)による上限クランプが実質的に効かないようにし、
+    // 上限(shotDurationMs)はこちら側で明示的にクランプする(下限0はoldestAvailableTime=0で
+    // PlaybackEngine自身が正しく扱える)。PlaybackEngineのコード自体は一切変更していない。
+    shotPlayback = new PlaybackEngine.PlaybackEngine({ delaySeconds: 1e9 });
+    shotPlayback.update(performance.now(), 0);
+    shotPlayback.seekToTime(0);
+    shotPlayback.pause();
+    shotPlayPauseBtn.textContent = "再生";
+
+    if (shotReviewRafId) cancelAnimationFrame(shotReviewRafId);
+    const loop = (now) => {
+      if (shotReviewOverlay.style.display === "none") return;
+      const t = shotPlayback.update(now, 0);
+      if (t > shotDurationMs) shotPlayback.playbackTime = shotDurationMs; // 保存済みクリップの終端でクランプ
+      const frame = BufferEngine.findFrameAt(shotFrameBuffer, shotPlayback.playbackTime);
+      if (frame) {
+        shotCtx.drawImage(frame.bitmap, 0, 0, shotReviewCanvas.width, shotReviewCanvas.height);
+      }
+      shotPlayPauseBtn.textContent = shotPlayback.getStateLabel() === "PAUSE" ? "再生" : "一時停止";
+      shotReviewRafId = requestAnimationFrame(loop);
+    };
+    shotReviewRafId = requestAnimationFrame(loop);
+  }
+
+  function closeShotReview() {
+    shotReviewOverlay.style.display = "none";
+    if (shotReviewRafId) cancelAnimationFrame(shotReviewRafId);
+    shotReviewRafId = null;
+    // 保存済み射のImageBitmapは、ライブのframeBufferとは無関係の一時データなので
+    // 画面を閉じたら明示的にcloseして解放する
+    if (shotFrameBuffer) {
+      for (const f of shotFrameBuffer) {
+        try { f.bitmap.close(); } catch (e) {}
+      }
+    }
+    shotFrameBuffer = null;
+    shotPlayback = null;
+  }
+  shotReviewClose.addEventListener("click", closeShotReview);
+  shotPlayPauseBtn.addEventListener("click", () => {
+    if (!shotPlayback) return;
+    if (shotPlayback.getStateLabel() === "PAUSE") shotPlayback.resume();
+    else shotPlayback.pause();
+  });
+  shotStepBackBtn.addEventListener("click", () => {
+    if (!shotPlayback || !shotFrameBuffer) return;
+    const t = BufferEngine.getPreviousFrameTime(shotFrameBuffer, shotPlayback.playbackTime);
+    if (t == null) return;
+    shotPlayback.seekToTime(t);
+    shotPlayback.pause();
+  });
+  shotStepForwardBtn.addEventListener("click", () => {
+    if (!shotPlayback || !shotFrameBuffer) return;
+    const t = BufferEngine.getNextFrameTime(shotFrameBuffer, shotPlayback.playbackTime);
+    if (t == null || t > shotDurationMs) return;
+    shotPlayback.seekToTime(t);
+    shotPlayback.pause();
+  });
 
   flipBtn.addEventListener("click", async () => {
     facingMode = facingMode === "environment" ? "user" : "environment";
@@ -1036,6 +1321,8 @@
   renderPresets();
   renderSlowRatePresets();
   renderSlowWindowPresets();
+  renderSaveRangePresets();
+  refreshShotList();
   startCamera();
   requestAnimationFrame(loop);
 })();
