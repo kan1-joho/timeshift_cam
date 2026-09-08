@@ -276,6 +276,29 @@
     padding: 10px 14px max(10px, env(safe-area-inset-bottom));
     background: var(--bg-panel);
   }
+
+  /* ---- マーキングOverlay Canvas ---- */
+  /* displayCanvasと完全に同じCSSサイズで重ねる。内部ピクセルサイズはJS側で
+     displayCanvasと同じ値に揃える(applyOrientation()内)。タップは、マーキングモードが
+     有効な間だけ受け取る(通常時は下のdisplayCanvasやstageへの操作を妨げない)。 */
+  #markingOverlay {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+  }
+  #markingOverlay.active { pointer-events: auto; touch-action: none; }
+
+  #markingToggle {
+    font-size: 11px; padding: 4px 9px; border-radius: 6px;
+    background: transparent; border: 1px solid var(--line); color: var(--text-dim);
+  }
+  #markingToggle.on { color: var(--accent); border-color: var(--accent); }
+
+  #markingToolbar { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .mark-tool { flex: 1; font-size: 12px; padding: 9px 4px; }
+  .mark-tool.selected { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+  #markClearAll.confirming { background: var(--accent); border-color: var(--accent); color: #fff; }
 </style>
 </head>
 <body>
@@ -284,6 +307,7 @@
     <h1>射タイムシフトカメラ</h1>
     <div id="headerRight">
       <span id="status">起動中…</span>
+      <button id="markingToggle">マーキング</button>
       <button id="settingsToggle">設定</button>
       <button id="fullscreenToggle">全画面</button>
       <button id="debugToggle">デバッグ</button>
@@ -297,6 +321,7 @@
 
   <div id="stage">
     <canvas id="displayCanvas"></canvas>
+    <canvas id="markingOverlay"></canvas>
     <div id="delayBadge" style="display:none">遅延 <b id="delayValueLabel">10</b> 秒</div>
     <div id="slowIndicator">SLOW 1/3x</div>
     <div id="debugPanel"></div>
@@ -321,6 +346,20 @@
   </div>
 
   <footer>
+    <div id="markingToolbar" style="display:none">
+      <div class="row">
+        <button class="mark-tool" data-mode="point">●点</button>
+        <button class="mark-tool" data-mode="vertical">│縦線</button>
+        <button class="mark-tool" data-mode="horizontal">─横線</button>
+        <button class="mark-tool" data-mode="angle">∠角度</button>
+        <button class="mark-tool" data-mode="arrow_release">🏹矢</button>
+        <button class="mark-tool" data-mode="erase">消去</button>
+      </div>
+      <div class="row">
+        <button id="markClearAll" class="wide">全消去</button>
+      </div>
+    </div>
+
     <div class="row">
       <button class="act-seek-back seek-major">5秒戻る</button>
       <button class="act-slow-check primary grow2">スロー確認</button>
@@ -490,6 +529,12 @@
   const shotStepBackBtn = document.getElementById("shotStepBack");
   const shotStepForwardBtn = document.getElementById("shotStepForward");
   const shotPlayPauseBtn = document.getElementById("shotPlayPause");
+  const markingOverlay = document.getElementById("markingOverlay");
+  const markCtx = markingOverlay.getContext("2d");
+  const markingToggleBtn = document.getElementById("markingToggle");
+  const markingToolbar = document.getElementById("markingToolbar");
+  const markToolBtns = document.querySelectorAll(".mark-tool");
+  const markClearAllBtn = document.getElementById("markClearAll");
   // 通常フッターと全画面オーバーレイの両方に同じ操作ボタンが存在するため、
   // idではなくクラスで一括取得し、両方に同じ挙動・同じ表示更新を適用する。
   const seekBackBtns = document.querySelectorAll(".act-seek-back");
@@ -672,6 +717,229 @@
     el.addEventListener("click", handleClickForIdle, true);
   });
   resetIdleTimer();
+
+  // ---- マーキング機能 ----
+  // STEP11: 映像上に点・縦線・横線・角度・矢飛び出し位置を重ね描きする。
+  // マーキングはセッション中のメモリ上(markings配列)にのみ保持し、IndexedDBへは保存しない。
+  // 座標変換は必ずcoordinateEngine.jsのAPIを経由し、index.html側で独自の座標計算は行わない。
+  let markingMode = "none"; // none/point/vertical/horizontal/angle/arrow_release/erase
+  let markings = [];
+  let pendingPoints = []; // 角度モード: 確定前の点(1〜2点)
+  let dragStart = null; // 縦線・横線モード: ドラッグ開始位置(正規化座標)
+  let dragCurrent = null; // ドラッグ中のプレビュー用
+
+  function setMarkingMode(mode) {
+    markingMode = mode;
+    pendingPoints = [];
+    dragStart = null;
+    dragCurrent = null;
+    markToolBtns.forEach((btn) => btn.classList.toggle("selected", btn.dataset.mode === mode));
+    markingOverlay.classList.toggle("active", mode !== "none");
+    redrawMarkingOverlay();
+  }
+
+  markingToggleBtn.addEventListener("click", () => {
+    const isOpen = markingToolbar.style.display !== "none";
+    if (isOpen) {
+      markingToolbar.style.display = "none";
+      markingToggleBtn.classList.remove("on");
+      setMarkingMode("none"); // マークOFF時は通常操作へ完全に戻す
+    } else {
+      markingToolbar.style.display = "block";
+      markingToggleBtn.classList.add("on");
+    }
+  });
+
+  markToolBtns.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const mode = btn.dataset.mode;
+      setMarkingMode(markingMode === mode ? "none" : mode); // 同じツールの再タップで解除
+    });
+  });
+
+  markClearAllBtn.addEventListener("click", () => {
+    if (!markings.length) return;
+    if (window.confirm("マーキングをすべて消去しますか？")) {
+      markings = [];
+      redrawMarkingOverlay();
+    }
+  });
+
+  // 画面(表示コンテナ)上の座標を、coordinateEngine経由で映像内部の正規化座標へ変換する。
+  // 変換ロジック自体はここに書かず、必ずcoordinateEngine.screenToNormalizedPointを使う。
+  function eventToNormalizedPoint(e) {
+    const rect = displayCanvas.getBoundingClientRect();
+    return CoordinateEngine.screenToNormalizedPoint(
+      e.clientX - rect.left,
+      e.clientY - rect.top,
+      rect.width,
+      rect.height,
+      displayCanvas.width,
+      displayCanvas.height
+    );
+  }
+
+  markingOverlay.addEventListener("pointerdown", (e) => {
+    if (suppressNextClick) return; // UI再表示のみのタップ(誤操作防止機能との整合)
+    if (markingMode === "none") return;
+    e.preventDefault();
+    if (markingMode === "vertical" || markingMode === "horizontal") {
+      const p = eventToNormalizedPoint(e);
+      dragStart = p;
+      dragCurrent = p;
+      redrawMarkingOverlay();
+    }
+  });
+
+  markingOverlay.addEventListener("pointermove", (e) => {
+    if (markingMode === "none" || !dragStart) return;
+    if (markingMode === "vertical" || markingMode === "horizontal") {
+      dragCurrent = eventToNormalizedPoint(e);
+      redrawMarkingOverlay();
+    }
+  });
+
+  markingOverlay.addEventListener("pointerup", (e) => {
+    if (suppressNextClick) return;
+    if (markingMode === "none") return;
+    const p = eventToNormalizedPoint(e);
+
+    if (markingMode === "point") {
+      markings.push(CoordinateEngine.createPointMarking({ x: p.x, y: p.y }));
+    } else if (markingMode === "vertical") {
+      if (dragStart) {
+        // 開始点・終了点のX座標を平均化する。タップ(ドラッグなし)の場合も
+        // 開始点=終了点なので同じ計算式でそのまま正しく機能する。
+        markings.push(CoordinateEngine.createVerticalMarking({ x: (dragStart.x + p.x) / 2 }));
+      }
+      dragStart = null;
+      dragCurrent = null;
+    } else if (markingMode === "horizontal") {
+      if (dragStart) {
+        markings.push(CoordinateEngine.createHorizontalMarking({ y: (dragStart.y + p.y) / 2 }));
+      }
+      dragStart = null;
+      dragCurrent = null;
+    } else if (markingMode === "angle") {
+      pendingPoints.push(p);
+      if (pendingPoints.length === 3) {
+        markings.push(CoordinateEngine.createAngleMarking({ points: pendingPoints.slice() }));
+        pendingPoints = [];
+      }
+    } else if (markingMode === "arrow_release") {
+      // timeMsは新たにperformance.now()等を取得せず、必ずPlayback Engineが管理する
+      // 現在の再生位置(playback.playbackTime)を使う。
+      markings.push(CoordinateEngine.createArrowReleaseMarking({ x: p.x, y: p.y, timeMs: playback.playbackTime }));
+    } else if (markingMode === "erase") {
+      const found = CoordinateEngine.findNearestMarking(markings, p);
+      if (found) {
+        markings = markings.filter((m) => m.id !== found.marking.id);
+      }
+    }
+    redrawMarkingOverlay();
+  });
+
+  // 1件のマーキングをOverlay Canvasへ描画する(映像本体には一切触れない)
+  function drawMarkingShape(ctx, m, w, h) {
+    ctx.save();
+    ctx.strokeStyle = "#e0533c";
+    ctx.fillStyle = "#e0533c";
+    ctx.lineWidth = 2;
+    switch (m.type) {
+      case "point":
+        ctx.beginPath();
+        ctx.arc(m.x * w, m.y * h, 6, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      case "arrow_release":
+        ctx.fillStyle = "#c9a13b";
+        ctx.beginPath();
+        ctx.arc(m.x * w, m.y * h, 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.font = "16px sans-serif";
+        ctx.fillText("🏹", m.x * w + 10, m.y * h - 8);
+        break;
+      case "vertical": {
+        const x = m.x * w;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+        break;
+      }
+      case "horizontal": {
+        const y = m.y * h;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+        break;
+      }
+      case "angle": {
+        const [p1, p2, p3] = m.points;
+        ctx.beginPath();
+        ctx.moveTo(p1.x * w, p1.y * h);
+        ctx.lineTo(p2.x * w, p2.y * h);
+        ctx.lineTo(p3.x * w, p3.y * h);
+        ctx.stroke();
+        [p1, p2, p3].forEach((p) => {
+          ctx.beginPath();
+          ctx.arc(p.x * w, p.y * h, 4, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        const deg = CoordinateEngine.computeAngleDegrees(m.points);
+        if (deg != null) {
+          ctx.font = "13px sans-serif";
+          ctx.fillText(deg.toFixed(0) + "°", p2.x * w + 8, p2.y * h - 8);
+        }
+        break;
+      }
+    }
+    ctx.restore();
+  }
+
+  // Overlay Canvas全体を再描画する。呼び出しは「マーキングが変化した時」「サイズが変わった時」
+  // だけでよく、毎フレーム呼ぶ必要はない(displayCanvasとは別のCanvasなので、映像側の描画が
+  // このCanvasの内容を消すことはない)。
+  function redrawMarkingOverlay() {
+    const w = markingOverlay.width;
+    const h = markingOverlay.height;
+    if (!w || !h) return;
+    markCtx.clearRect(0, 0, w, h);
+    markings.forEach((m) => drawMarkingShape(markCtx, m, w, h));
+
+    // 確定前のプレビュー(薄く表示)
+    markCtx.save();
+    markCtx.globalAlpha = 0.55;
+    markCtx.strokeStyle = "#e0533c";
+    markCtx.fillStyle = "#e0533c";
+    if ((markingMode === "vertical" || markingMode === "horizontal") && dragStart && dragCurrent) {
+      if (markingMode === "vertical") {
+        const x = ((dragStart.x + dragCurrent.x) / 2) * w;
+        markCtx.beginPath();
+        markCtx.moveTo(x, 0);
+        markCtx.lineTo(x, h);
+        markCtx.stroke();
+      } else {
+        const y = ((dragStart.y + dragCurrent.y) / 2) * h;
+        markCtx.beginPath();
+        markCtx.moveTo(0, y);
+        markCtx.lineTo(w, y);
+        markCtx.stroke();
+      }
+    }
+    if (markingMode === "angle" && pendingPoints.length > 0) {
+      markCtx.beginPath();
+      pendingPoints.forEach((p, i) => {
+        const x = p.x * w, y = p.y * h;
+        if (i === 0) markCtx.moveTo(x, y);
+        else markCtx.lineTo(x, y);
+        markCtx.fillRect(x - 3, y - 3, 6, 6);
+      });
+      markCtx.stroke();
+    }
+    markCtx.restore();
+  }
 
   // ---- スロー速度・スロー範囲の選択 ----
   // Playback EngineのplayRecentWindow(windowSec, rate)は既に汎用化されているため、
@@ -1103,9 +1371,16 @@
       bufferCanvas.height = Math.round(outH * scale);
       displayCanvas.width = outW;
       displayCanvas.height = outH;
+      markingOverlay.width = outW;
+      markingOverlay.height = outH;
       // 向き・サイズが変わると既存バッファの内容と整合しなくなるため破棄する
       clearBuffer();
       playback.goLive();
+      // 映像の解像度・向きが変わるとマーキングの前提が崩れるため、既存マーキングも破棄する
+      // (正規化座標自体は解像度非依存だが、フレーム内容そのものが変わるため意味が無くなる)
+      markings.length = 0;
+      pendingPoints.length = 0;
+      redrawMarkingOverlay();
     }
   }
 

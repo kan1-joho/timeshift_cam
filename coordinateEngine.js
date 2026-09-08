@@ -129,14 +129,35 @@
     };
   }
 
-  // 線マーキング(縦線・横線・自由な線を共通の{start,end}構造で表現する)
-  function createLineMarking({ type, start, end, timeMs, id, createdAt }) {
-    const lineType = type === "vertical" || type === "horizontal" ? type : "line";
+  // 線マーキング(汎用の2点線分。将来の自由線・任意方向の線分用途を想定)
+  function createLineMarking({ start, end, timeMs, id, createdAt }) {
     return {
       id: id || generateMarkingId(),
-      type: lineType,
+      type: "line",
       start: clampNormalizedPoint(start),
       end: clampNormalizedPoint(end),
+      timeMs: timeMs != null ? timeMs : null,
+      createdAt: createdAt != null ? createdAt : Date.now(),
+    };
+  }
+
+  // 縦線: x座標を固定した、映像の上端から下端まで伸びる垂直線。2点を保存する必要はない。
+  function createVerticalMarking({ x, timeMs, id, createdAt }) {
+    return {
+      id: id || generateMarkingId(),
+      type: "vertical",
+      x: clampNormalizedPoint({ x, y: 0 }).x,
+      timeMs: timeMs != null ? timeMs : null,
+      createdAt: createdAt != null ? createdAt : Date.now(),
+    };
+  }
+
+  // 横線: y座標を固定した、映像の左端から右端まで伸びる水平線。
+  function createHorizontalMarking({ y, timeMs, id, createdAt }) {
+    return {
+      id: id || generateMarkingId(),
+      type: "horizontal",
+      y: clampNormalizedPoint({ x: 0, y }).y,
       timeMs: timeMs != null ? timeMs : null,
       createdAt: createdAt != null ? createdAt : Date.now(),
     };
@@ -192,9 +213,11 @@
       case "point":
       case "arrow_release":
         return isFinitePoint(m);
-      case "line":
       case "vertical":
+        return Number.isFinite(m.x);
       case "horizontal":
+        return Number.isFinite(m.y);
+      case "line":
         return isFinitePoint(m.start) && isFinitePoint(m.end);
       case "angle":
         return Array.isArray(m.points) && m.points.length === 3 && m.points.every(isFinitePoint);
@@ -203,6 +226,75 @@
       default:
         return false;
     }
+  }
+
+  // ---------------------------------------------------------------
+  // 消去モード用: 距離判定・最近傍マーキング探索
+  // ---------------------------------------------------------------
+  // 消去の許容範囲(正規化座標系での距離)。将来、実機テストで「消しにくい/誤って
+  // 隣の線を消す」といった問題が出た場合は、この定数だけを調整すればよい。
+  const DEFAULT_ERASE_THRESHOLD = 0.035;
+
+  function distancePointToPoint(p, q) {
+    return Math.hypot(p.x - q.x, p.y - q.y);
+  }
+
+  // 点pから、線分a-bまでの最短距離(正規化座標系)
+  function distancePointToSegment(p, a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq === 0) return distancePointToPoint(p, a);
+    let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    return distancePointToPoint(p, { x: a.x + t * dx, y: a.y + t * dy });
+  }
+
+  // マーキング1件までの距離を、その種類に応じて計算する。
+  function distanceToMarking(point, m) {
+    switch (m.type) {
+      case "point":
+      case "arrow_release":
+        return distancePointToPoint(point, m);
+      case "vertical":
+        if (Number.isFinite(m.x)) {
+          return distancePointToSegment(point, { x: m.x, y: 0 }, { x: m.x, y: 1 });
+        }
+        return distancePointToSegment(point, m.start, m.end);
+      case "horizontal":
+        if (Number.isFinite(m.y)) {
+          return distancePointToSegment(point, { x: 0, y: m.y }, { x: 1, y: m.y });
+        }
+        return distancePointToSegment(point, m.start, m.end);
+      case "line":
+        return distancePointToSegment(point, m.start, m.end);
+      case "angle":
+        return Math.min(
+          distancePointToSegment(point, m.points[0], m.points[1]),
+          distancePointToSegment(point, m.points[1], m.points[2])
+        );
+      default:
+        return Infinity;
+    }
+  }
+
+  // タップ位置(正規化座標)に最も近いマーキングを探す。閾値(正規化座標系の距離)を
+  // 超える場合はnullを返す(=消去対象なし)。
+  function findNearestMarking(markings, point, threshold) {
+    const th = threshold != null ? threshold : DEFAULT_ERASE_THRESHOLD;
+    let best = null;
+    let bestDist = Infinity;
+    for (const m of markings) {
+      const d = distanceToMarking(point, m);
+      if (d < bestDist) {
+        bestDist = d;
+        best = m;
+      }
+    }
+    if (best && bestDist <= th) {
+      return { marking: best, distance: bestDist };
+    }
+    return null;
   }
 
   return {
@@ -218,9 +310,16 @@
     generateMarkingId,
     createPointMarking,
     createLineMarking,
+    createVerticalMarking,
+    createHorizontalMarking,
     createAngleMarking,
     createArrowReleaseMarking,
     computeAngleDegrees,
     isValidMarking,
+    // 消去モード
+    DEFAULT_ERASE_THRESHOLD,
+    distancePointToPoint,
+    distancePointToSegment,
+    findNearestMarking,
   };
 });

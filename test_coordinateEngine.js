@@ -161,13 +161,30 @@ check("点マーキングは範囲外の値もクランプされて生成され�
   assert.ok(CoordinateEngine.isValidMarking(m));
 });
 
-check("線マーキング(縦線・横線)はstart/endを持つ", () => {
-  const v = CoordinateEngine.createLineMarking({ type: "vertical", start: { x: 0.5, y: 0 }, end: { x: 0.5, y: 1 } });
+check("縦線マーキングはx座標のみを保持する(2点保存ではない)", () => {
+  const v = CoordinateEngine.createVerticalMarking({ x: 0.5 });
   assert.strictEqual(v.type, "vertical");
+  assert.strictEqual(v.x, 0.5);
+  assert.strictEqual(v.start, undefined, "縦線はstart/endを持たない");
   assert.ok(CoordinateEngine.isValidMarking(v));
-  const h = CoordinateEngine.createLineMarking({ type: "horizontal", start: { x: 0, y: 0.5 }, end: { x: 1, y: 0.5 } });
+});
+
+check("横線マーキングはy座標のみを保持する(2点保存ではない)", () => {
+  const h = CoordinateEngine.createHorizontalMarking({ y: 0.5 });
   assert.strictEqual(h.type, "horizontal");
+  assert.strictEqual(h.y, 0.5);
   assert.ok(CoordinateEngine.isValidMarking(h));
+});
+
+check("縦線・横線のx/yも範囲外ならクランプされる", () => {
+  assert.strictEqual(CoordinateEngine.createVerticalMarking({ x: 1.5 }).x, 1);
+  assert.strictEqual(CoordinateEngine.createHorizontalMarking({ y: -0.3 }).y, 0);
+});
+
+check("汎用の線マーキング(createLineMarking)はstart/endを持つ", () => {
+  const line = CoordinateEngine.createLineMarking({ start: { x: 0.2, y: 0.3 }, end: { x: 0.8, y: 0.9 } });
+  assert.strictEqual(line.type, "line");
+  assert.ok(CoordinateEngine.isValidMarking(line));
 });
 
 check("角度マーキングは3点を保存し、角度そのものは保存しない(表示時に再計算する)", () => {
@@ -204,6 +221,38 @@ check("矢飛び出し位置マーキングはtimeMsと紐づけて保存でき�
   assert.strictEqual(m.type, "arrow_release");
   assert.strictEqual(m.timeMs, 5000);
   assert.ok(CoordinateEngine.isValidMarking(m));
+});
+
+check("arrow_releaseのtimeMsは、playback.playbackTimeのような小数を含む値でも丸められずそのまま保持される", () => {
+  const playbackTimeLike = 123456.789;
+  const m = CoordinateEngine.createArrowReleaseMarking({ x: 0.5, y: 0.5, timeMs: playbackTimeLike });
+  assert.strictEqual(m.timeMs, playbackTimeLike);
+});
+
+console.log("\n[削除] 1件削除・全消去(マーキング配列操作の基本パターン)");
+
+check("「最後に追加したものを削除」は配列の末尾要素を取り除くだけで実現できる", () => {
+  const markings = [
+    CoordinateEngine.createPointMarking({ x: 0.1, y: 0.1 }),
+    CoordinateEngine.createPointMarking({ x: 0.2, y: 0.2 }),
+    CoordinateEngine.createPointMarking({ x: 0.3, y: 0.3 }),
+  ];
+  const removed = markings.pop();
+  assert.strictEqual(markings.length, 2);
+  assert.strictEqual(removed.x, 0.3);
+  assert.ok(markings.every((m) => m.x !== 0.3));
+});
+
+check("全消去は配列を空にするだけで、他の状態(idカウンタ等)に影響しない", () => {
+  let markings = [
+    CoordinateEngine.createPointMarking({ x: 0.1, y: 0.1 }),
+    CoordinateEngine.createHorizontalMarking({ y: 0.5 }),
+  ];
+  markings = [];
+  assert.strictEqual(markings.length, 0);
+  // クリア後も新規生成は問題なく行える
+  const next = CoordinateEngine.createPointMarking({ x: 0.9, y: 0.9 });
+  assert.ok(CoordinateEngine.isValidMarking(next));
 });
 
 check("マーキングIDは大量生成しても重複しない", () => {
