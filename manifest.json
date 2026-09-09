@@ -1,0 +1,32 @@
+{
+  "name": "射タイムシフトカメラ",
+  "short_name": "射タイムシフト",
+  "description": "弓道フォーム確認用の遅延・スロー再生カメラアプリ（端末内完結・ネットワーク非依存）",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#15140f",
+  "theme_color": "#15140f",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

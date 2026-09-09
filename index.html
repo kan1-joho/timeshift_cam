@@ -7,6 +7,8 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="射タイムシフトカメラ">
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
 <title>射タイムシフトカメラ</title>
 <style>
   :root {
@@ -454,6 +456,17 @@
   const SEEK_STEP_SEC = 5;
   // 射の保存範囲の選択肢は、スロー範囲(SLOW_WINDOW_OPTIONS)と同じ数値セットを共用する
   const SAVE_RANGE_OPTIONS = SLOW_WINDOW_OPTIONS;
+
+  // ---- STEP12: 保存済み射レビュー用の時刻管理 ----
+  // PlaybackEngineのコンストラクタは `opts.delaySeconds || 10` としているため、
+  // delaySeconds に 0 を渡すとfalsy判定でデフォルト(10)にフォールバックしてしまう。
+  // そのため「無効化したい」場合でもtruthyな極小値を使う。
+  const REVIEW_DELAY_SECONDS = 0.001;
+  // レビューの有効時間範囲(0〜shotDurationMs、最大でも10秒程度)は、実際のページ経過時間
+  // (performance.now())とは無関係な値なので、PlaybackEngine内部のnewestAllowed
+  // (nowMs - delaySeconds*1000)が「ページ起動直後にレビューを開いた場合」でも
+  // 常にshotDurationMsを上回るよう、十分大きな基準値からの経過時間を独自に作って渡す。
+  const REVIEW_TIME_HEADROOM_MS = 1e7;
   const DEFAULT_SAVE_RANGE_SEC = 10;
   const JPEG_QUALITY = StorageEngine.DEFAULT_JPEG_QUALITY; // 0.8。将来変更する場合はstorageEngine.js側の定数を調整する
   // バッファ保持時間：最大遅延(30秒) + 「最大遅延位置からさらに最大10秒のスロー確認をする」ケースに
@@ -1601,6 +1614,25 @@
   startCamera();
   requestAnimationFrame(loop);
 })();
+</script>
+
+<!--
+  オフライン起動用のService Worker登録。
+  ・アプリ本体(このindex.htmlや各エンジンJS、アイコン、manifest)のみをキャッシュ対象とする。
+  ・カメラ映像やIndexedDB(保存済み射)には一切関与しない。既存のStorage Engineの
+    仕組みはそのまま。
+  ・登録に失敗しても(対応ブラウザでない場合や、file://等の非対応環境も含む)、
+    このtry/catchでにぎりつぶすだけで、通常のオンライン動作には一切影響しない。
+  ・メインのアプリ初期化(上のIIFE)とは完全に独立しており、カメラ起動等をブロックしない。
+-->
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./sw.js").catch((err) => {
+        console.warn("[PWA] Service Worker登録に失敗しました(オフライン起動は無効のまま通常動作します):", err);
+      });
+    });
+  }
 </script>
 </body>
 </html>
