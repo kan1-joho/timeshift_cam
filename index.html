@@ -10,6 +10,28 @@
 <link rel="manifest" href="./manifest.json">
 <link rel="apple-touch-icon" href="./apple-touch-icon.png">
 <title>射タイムシフトカメラ</title>
+<script>
+  // ---- 診断用: 通常はconsoleにしか出ない未捕捉のエラーを、画面の診断欄にも表示する ----
+  // iPad実機でWeb Inspector(Mac接続)が無くても原因特定できるようにするための一時的な
+  // 仕組み。アプリ本体のロジックには一切関与しない(表示するだけ)。
+  // #diagLineはこの時点ではまだDOMに存在しないため、エラー発生時に都度取得する。
+  window.addEventListener("error", (e) => {
+    const el = document.getElementById("diagLine");
+    const msg =
+      "⚠ 未捕捉のJSエラー: " +
+      (e.message || (e.error && e.error.message) || "(詳細不明)") +
+      " @ " + (e.filename || "?") + ":" + (e.lineno || "?");
+    console.error(msg, e.error);
+    if (el) el.innerHTML += (el.innerHTML ? "<br>" : "") + '<span class="bad">' + msg + "</span>";
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    const el = document.getElementById("diagLine");
+    const reason = e.reason && e.reason.message ? e.reason.message : String(e.reason);
+    const msg = "⚠ 未処理のPromiseエラー: " + reason;
+    console.error(msg, e.reason);
+    if (el) el.innerHTML += (el.innerHTML ? "<br>" : "") + '<span class="bad">' + msg + "</span>";
+  });
+</script>
 <style>
   :root {
     --bg: #15140f;
