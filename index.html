@@ -294,7 +294,24 @@
     background: transparent; border: 1px solid var(--line); color: var(--text-dim);
   }
   #shotReviewCanvas {
-    flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000;
+    width: 100%; height: 100%; object-fit: contain; background: #000; display: block;
+  }
+  #shotReviewStage {
+    position: relative; flex: 1; min-height: 0; width: 100%;
+    background: #000;
+  }
+  /* STEP12時点では配置・サイズ同期のみ。マーキングの描画・操作はまだ実装しない。 */
+  #shotReviewMarkingOverlay {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+  }
+  #shotReviewPosition {
+    text-align: center;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; color: var(--text-dim);
+    margin: 0 0 8px;
   }
   #shotReviewControls {
     padding: 10px 14px max(10px, env(safe-area-inset-bottom));
@@ -318,6 +335,16 @@
     background: transparent; border: 1px solid var(--line); color: var(--text-dim);
   }
   #markingToggle.on { color: var(--accent); border-color: var(--accent); }
+
+  /* ---- STEP13: レビュー側マーキング(ライブ側とは完全に独立) ---- */
+  #shotMarkingToggle {
+    font-size: 11px; padding: 4px 9px; border-radius: 6px;
+    background: transparent; border: 1px solid var(--line); color: var(--text-dim);
+  }
+  #shotMarkingToggle.on { color: var(--accent); border-color: var(--accent); }
+  #shotReviewMarkingOverlay.active { pointer-events: auto; touch-action: none; }
+  #shotMarkingToolbar { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .shot-mark-tool { flex: 1; font-size: 12px; padding: 9px 4px; }
 
   #markingToolbar { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
   .mark-tool { flex: 1; font-size: 12px; padding: 9px 4px; }
@@ -441,15 +468,38 @@
 <div id="shotReviewOverlay" style="display:none">
   <div id="shotReviewHeader">
     <span id="shotReviewTitle">射の再生</span>
+    <button id="shotMarkingToggle">マーキング</button>
     <button id="shotReviewClose">閉じる</button>
   </div>
-  <canvas id="shotReviewCanvas"></canvas>
+  <div id="shotReviewStage">
+    <canvas id="shotReviewCanvas"></canvas>
+    <canvas id="shotReviewMarkingOverlay"></canvas>
+  </div>
   <div id="shotReviewControls">
+    <div id="shotMarkingToolbar" style="display:none">
+      <div class="row">
+        <button class="shot-mark-tool" data-tool="draw">描く</button>
+        <button class="shot-mark-tool" data-tool="erase">消去</button>
+      </div>
+      <div class="row">
+        <button id="shotMarkClearAll" class="wide">全消去</button>
+      </div>
+    </div>
+    <p id="shotReviewPosition">0.0 / 0.0秒</p>
+    <div class="row">
+      <button id="shotSeekBack" class="seek-major">5秒戻る</button>
+      <button id="shotSlowCheck" class="primary grow2">スロー確認</button>
+      <button id="shotSeekForward" class="seek-minor">5秒進む</button>
+    </div>
     <div class="row">
       <button id="shotStepBack" class="wide">|◀ 1F</button>
       <button id="shotPlayPause" class="wide primary">一時停止</button>
       <button id="shotStepForward" class="wide">1F ▶|</button>
     </div>
+    <div class="label" style="margin-top:12px">速度</div>
+    <div class="row" id="shotSlowRatePresets"></div>
+    <div class="label" style="margin-top:8px">範囲</div>
+    <div class="row" id="shotSlowWindowPresets"></div>
   </div>
 </div>
 
@@ -478,17 +528,6 @@
   const SEEK_STEP_SEC = 5;
   // 射の保存範囲の選択肢は、スロー範囲(SLOW_WINDOW_OPTIONS)と同じ数値セットを共用する
   const SAVE_RANGE_OPTIONS = SLOW_WINDOW_OPTIONS;
-
-  // ---- STEP12: 保存済み射レビュー用の時刻管理 ----
-  // PlaybackEngineのコンストラクタは `opts.delaySeconds || 10` としているため、
-  // delaySeconds に 0 を渡すとfalsy判定でデフォルト(10)にフォールバックしてしまう。
-  // そのため「無効化したい」場合でもtruthyな極小値を使う。
-  const REVIEW_DELAY_SECONDS = 0.001;
-  // レビューの有効時間範囲(0〜shotDurationMs、最大でも10秒程度)は、実際のページ経過時間
-  // (performance.now())とは無関係な値なので、PlaybackEngine内部のnewestAllowed
-  // (nowMs - delaySeconds*1000)が「ページ起動直後にレビューを開いた場合」でも
-  // 常にshotDurationMsを上回るよう、十分大きな基準値からの経過時間を独自に作って渡す。
-  const REVIEW_TIME_HEADROOM_MS = 1e7;
   const DEFAULT_SAVE_RANGE_SEC = 10;
   const JPEG_QUALITY = StorageEngine.DEFAULT_JPEG_QUALITY; // 0.8。将来変更する場合はstorageEngine.js側の定数を調整する
   // バッファ保持時間：最大遅延(30秒) + 「最大遅延位置からさらに最大10秒のスロー確認をする」ケースに
@@ -558,12 +597,24 @@
   const saveStatus = document.getElementById("saveStatus");
   const shotListEl = document.getElementById("shotList");
   const shotReviewOverlay = document.getElementById("shotReviewOverlay");
-  const shotReviewTitle = document.getElementById("shotReviewTitle");
-  const shotReviewClose = document.getElementById("shotReviewClose");
+  const shotReviewStage = document.getElementById("shotReviewStage");
   const shotReviewCanvas = document.getElementById("shotReviewCanvas");
+  const shotReviewMarkingOverlay = document.getElementById("shotReviewMarkingOverlay");
+  const shotMarkingToggleBtn = document.getElementById("shotMarkingToggle");
+  const shotMarkingToolbar = document.getElementById("shotMarkingToolbar");
+  const shotMarkToolBtns = document.querySelectorAll(".shot-mark-tool");
+  const shotMarkClearAllBtn = document.getElementById("shotMarkClearAll");
+  const shotReviewPosition = document.getElementById("shotReviewPosition");
   const shotStepBackBtn = document.getElementById("shotStepBack");
   const shotStepForwardBtn = document.getElementById("shotStepForward");
   const shotPlayPauseBtn = document.getElementById("shotPlayPause");
+  const shotSeekBackBtn = document.getElementById("shotSeekBack");
+  const shotSeekForwardBtn = document.getElementById("shotSeekForward");
+  const shotSlowCheckBtn = document.getElementById("shotSlowCheck");
+  const shotSlowRatePresetsRow = document.getElementById("shotSlowRatePresets");
+  const shotSlowWindowPresetsRow = document.getElementById("shotSlowWindowPresets");
+  const shotReviewTitle = document.getElementById("shotReviewTitle");
+  const shotReviewClose = document.getElementById("shotReviewClose");
   const markingOverlay = document.getElementById("markingOverlay");
   const markCtx = markingOverlay.getContext("2d");
   const markingToggleBtn = document.getElementById("markingToggle");
@@ -1140,6 +1191,7 @@
         delBtn.textContent = "削除";
         delBtn.className = "shot-delete";
         delBtn.addEventListener("click", async () => {
+          if (!window.confirm("この射を削除しますか？")) return; // キャンセル時はStorageEngineを一切呼ばない
           delBtn.disabled = true;
           try {
             await StorageEngine.deleteShot(shot.id);
@@ -1166,6 +1218,271 @@
   let shotReviewRafId = null;
   const shotCtx = shotReviewCanvas.getContext("2d", { alpha: false });
 
+  // ---- STEP13: レビュー側マーキング(保存・復元) ----
+  // ライブ側(markingMode/markings/markCtx等)とは変数・関数とも完全に独立させる。
+  const shotMarkCtx = shotReviewMarkingOverlay.getContext("2d");
+  let currentReviewShotId = null;
+  let shotMarkingMode = false; // ON/OFF
+  let shotMarkingTool = "draw"; // STEP14: "draw" | "erase"(ライブ側のmarkingModeとは別管理)
+  let shotMarkings = []; // 読み込み済み+新規作成分。{ id, shotId, relTime, type:"freehand", points, createdAt }
+  let shotMarkStroke = null; // 描画中のストローク(正規化座標の配列)。確定前はnull。
+
+  // ---- STEP12: レビュー専用の時刻管理 ----
+  // 旧実装は delaySeconds:1e9 でPlaybackEngine内部のnewestAllowedクランプを
+  // 「実質無効化」しようとしていたが、newestAllowed(=nowMs - delaySeconds*1000)が
+  // 極端な負数になり、oldestAvailableTime(=0)との大小関係が逆転してseekToTime(0)等が
+  // 巨大な負数にクランプされ直してしまう不具合があった(実機で発覚)。
+  // PlaybackEngine自体は変更せず、index.html側で「実時刻(performance.now())に依存しない
+  // レビュー専用の擬似時刻」を与えることで、常にnewestAllowedがshotDurationMs(最大10秒)
+  // より十分大きい値に保たれるようにする。上限(shotDurationMs)自体はこちら側で明示的に
+  // クランプする(下限0はoldestAvailableTime=0でPlaybackEngine自身が正しく扱える)。
+  const REVIEW_TIME_HEADROOM_MS = 1e7; // shotDurationMsの最大値(10秒)より十分大きい基準値
+  const REVIEW_DELAY_SECONDS = 0.001; // 0だと(opts.delaySeconds || 10)でデフォルト10になるため、truthyな極小値にする
+  let reviewClockBase = null;
+  function reviewNow(realNow) {
+    if (reviewClockBase === null) reviewClockBase = realNow;
+    return REVIEW_TIME_HEADROOM_MS + (realNow - reviewClockBase);
+  }
+  function clampReviewTime(t) {
+    return Math.max(0, Math.min(shotDurationMs, t));
+  }
+  function updateShotReviewPosition() {
+    const cur = (shotPlayback ? shotPlayback.playbackTime : 0) / 1000;
+    shotReviewPosition.textContent = cur.toFixed(1) + " / " + (shotDurationMs / 1000).toFixed(1) + "秒";
+  }
+
+  // ---- STEP12: レビュー専用スロー設定 ----
+  // ライブ側のslowRate/slowWindowSecとは共有しない、完全に独立した変数。
+  // レビュー画面を開くたびに、常にDEFAULT_SLOW_RATE/DEFAULT_SLOW_WINDOW_SEC
+  // (ライブと同じデフォルト定数)から開始する(ライブの現在設定は引き継がない)。
+  let reviewSlowRate = DEFAULT_SLOW_RATE;
+  let reviewSlowWindowSec = DEFAULT_SLOW_WINDOW_SEC;
+
+  function renderShotSlowRatePresets() {
+    shotSlowRatePresetsRow.innerHTML = "";
+    SLOW_RATE_OPTIONS.forEach((rate) => {
+      const b = document.createElement("button");
+      b.textContent = rateFractionLabel(rate) + "倍速";
+      b.className = Math.abs(rate - reviewSlowRate) < 0.001 ? "selected" : "";
+      b.addEventListener("click", () => setReviewSlowRate(rate));
+      shotSlowRatePresetsRow.appendChild(b);
+    });
+  }
+  function renderShotSlowWindowPresets() {
+    shotSlowWindowPresetsRow.innerHTML = "";
+    SLOW_WINDOW_OPTIONS.forEach((sec) => {
+      const b = document.createElement("button");
+      b.textContent = sec + "秒";
+      b.className = sec === reviewSlowWindowSec ? "selected" : "";
+      b.addEventListener("click", () => setReviewSlowWindow(sec));
+      shotSlowWindowPresetsRow.appendChild(b);
+    });
+  }
+  function setReviewSlowRate(rate) {
+    reviewSlowRate = rate;
+    renderShotSlowRatePresets();
+    const label = shotPlayback ? shotPlayback.getStateLabel() : "";
+    if (label === "SLOW" || label === "SLOW_PAUSED") reviewSlowCheck();
+  }
+  function setReviewSlowWindow(sec) {
+    reviewSlowWindowSec = sec;
+    renderShotSlowWindowPresets();
+    const label = shotPlayback ? shotPlayback.getStateLabel() : "";
+    if (label === "SLOW" || label === "SLOW_PAUSED") reviewSlowCheck();
+  }
+  function reviewSlowCheck() {
+    if (!shotPlayback) return;
+    // ライブのplayRecentWindow()はデフォルトで終了時にgoLive()するが、レビューには
+    // 「ライブへ戻る」という概念が無いため、区間終端でそのまま一時停止させる。
+    shotPlayback.playRecentWindow(reviewSlowWindowSec, reviewSlowRate, () => {
+      shotPlayback.pause();
+    });
+  }
+
+  // ---- STEP12: マーキングOverlay(レビュー側)のサイズ同期 ----
+  // 今回は配置とサイズ同期のみ。実際の描画・タップ操作・保存はまだ実装しない
+  // (pointer-eventsは常にnoneのまま=操作を一切受け付けない)。
+  function syncShotReviewMarkingOverlaySize() {
+    shotReviewMarkingOverlay.width = shotReviewCanvas.width;
+    shotReviewMarkingOverlay.height = shotReviewCanvas.height;
+  }
+
+  // 現在表示中の実フレーム時刻とrelTimeが完全一致するマーキングだけを対象にする(A案)。
+  // 「描いた時刻以降ずっと表示」ではなく、そのフレームでのみ表示する仕様。
+  function visibleShotMarkings() {
+    if (!shotFrameBuffer || !shotFrameBuffer.length || !shotPlayback) return [];
+    const frame = BufferEngine.findFrameAt(shotFrameBuffer, shotPlayback.playbackTime);
+    if (!frame) return [];
+    return shotMarkings.filter((m) => m.relTime === frame.time);
+  }
+
+  function drawShotMarkingShape(ctx, m, w, h) {
+    if (m.type !== "freehand" || !Array.isArray(m.points) || m.points.length < 2) return;
+    ctx.save();
+    ctx.strokeStyle = "#e0533c";
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    m.points.forEach((p, i) => {
+      const x = p.x * w, y = p.y * h;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 呼び出しは毎フレーム(再生ループ内)。表示すべきマーキングが再生時刻によって
+  // 切り替わる仕様(A案)のため、ライブ側のredrawMarkingOverlay()と違い、
+  // 「変化があった時だけ」ではなく毎フレーム再評価する。
+  function redrawShotReviewMarkingOverlay() {
+    const w = shotReviewMarkingOverlay.width;
+    const h = shotReviewMarkingOverlay.height;
+    if (!w || !h) return;
+    shotMarkCtx.clearRect(0, 0, w, h);
+    visibleShotMarkings().forEach((m) => drawShotMarkingShape(shotMarkCtx, m, w, h));
+
+    // 描画中(未確定・未保存)のストロークのプレビュー
+    if (shotMarkStroke && shotMarkStroke.length > 1) {
+      drawShotMarkingShape(shotMarkCtx, { type: "freehand", points: shotMarkStroke }, w, h);
+    }
+  }
+
+  // 画面(shotReviewCanvas)上の座標を、coordinateEngine経由で正規化座標へ変換する。
+  // ライブ側のeventToNormalizedPoint()と同じ考え方だが、対象Canvasが異なるため別関数にする。
+  function shotEventToNormalizedPoint(e) {
+    const rect = shotReviewCanvas.getBoundingClientRect();
+    return CoordinateEngine.screenToNormalizedPoint(
+      e.clientX - rect.left,
+      e.clientY - rect.top,
+      rect.width,
+      rect.height,
+      shotReviewCanvas.width,
+      shotReviewCanvas.height
+    );
+  }
+
+  function setShotMarkingTool(tool) {
+    shotMarkingTool = tool;
+    shotMarkStroke = null;
+    shotMarkToolBtns.forEach((btn) => btn.classList.toggle("selected", btn.dataset.tool === tool));
+    redrawShotReviewMarkingOverlay();
+  }
+  shotMarkToolBtns.forEach((btn) => {
+    btn.addEventListener("click", () => setShotMarkingTool(btn.dataset.tool));
+  });
+
+  function setShotMarkingMode(on) {
+    shotMarkingMode = on;
+    shotMarkStroke = null;
+    shotMarkingToggleBtn.classList.toggle("on", on);
+    shotReviewMarkingOverlay.classList.toggle("active", on);
+    shotMarkingToolbar.style.display = on ? "block" : "none";
+    if (on) setShotMarkingTool("draw"); // ONにするたびに「描く」から始める(基本状態)
+    // 描画・消去中に映像が動くと位置がずれるため、マーキングONにした瞬間は一時停止する。
+    // (レビューCanvas本体の再生処理とは別の入力経路として扱うだけで、再生ロジック自体は変更しない)
+    if (on && shotPlayback && shotPlayback.getStateLabel() !== "PAUSE") {
+      shotPlayback.pause();
+    }
+    redrawShotReviewMarkingOverlay();
+  }
+  shotMarkingToggleBtn.addEventListener("click", () => setShotMarkingMode(!shotMarkingMode));
+
+  // STEP14: タップ位置に最も近いマーキングを1件削除する(消去モード)。
+  // 対象は「現在表示中(=現在フレームとrelTimeが一致)のマーキングだけ」に限定してから
+  // CoordinateEngine.findNearestMarking()に渡す(他の時刻のマーキングを誤って消さないため)。
+  // 距離計算・しきい値は独自実装せず、既存のfindNearestMarking()/DEFAULT_ERASE_THRESHOLDをそのまま使う。
+  async function eraseShotMarkingAt(point) {
+    const candidates = visibleShotMarkings();
+    const found = CoordinateEngine.findNearestMarking(candidates, point);
+    if (!found) return;
+    const targetId = found.marking.id;
+    shotMarkings = shotMarkings.filter((m) => m.id !== targetId); // 現在開いている射のメモリ上配列からのみ削除
+    redrawShotReviewMarkingOverlay();
+    try {
+      await StorageEngine.deleteMarking(targetId);
+    } catch (err) {
+      console.error("マーキングの削除に失敗しました:", err);
+    }
+  }
+
+  shotMarkClearAllBtn.addEventListener("click", async () => {
+    if (!currentReviewShotId || !shotMarkings.length) return; // 0件なら何もしない
+    if (!window.confirm("この射のマーキングをすべて削除しますか？")) return; // キャンセル時は何も変更しない
+    const shotId = currentReviewShotId;
+    try {
+      await StorageEngine.deleteShotMarkings(shotId); // 現在の射(shotId)のものだけを対象にする
+    } catch (err) {
+      console.error("マーキングの全消去に失敗しました:", err);
+      return; // IndexedDB側が失敗した場合、メモリ側もあえて変更せず整合性を優先する
+    }
+    shotMarkings = [];
+    redrawShotReviewMarkingOverlay();
+  });
+
+  shotReviewMarkingOverlay.addEventListener("pointerdown", (e) => {
+    if (!shotMarkingMode) return;
+    e.preventDefault();
+    if (shotMarkingTool === "draw") {
+      shotMarkStroke = [shotEventToNormalizedPoint(e)];
+      redrawShotReviewMarkingOverlay();
+    }
+    // 消去モードではpointerdownでは何もしない(pointerupでタップ位置を確定して消去する)
+  });
+  shotReviewMarkingOverlay.addEventListener("pointermove", (e) => {
+    if (!shotMarkingMode || shotMarkingTool !== "draw" || !shotMarkStroke) return;
+    shotMarkStroke.push(shotEventToNormalizedPoint(e));
+    redrawShotReviewMarkingOverlay();
+  });
+  shotReviewMarkingOverlay.addEventListener("pointercancel", () => {
+    // iPad Safariでのジェスチャー割り込み等でpointerupが来ないケースへの保険。
+    // 未確定のストロークを保存せずに捨てるだけで、既存の描画・消去ロジックには影響しない。
+    shotMarkStroke = null;
+    redrawShotReviewMarkingOverlay();
+  });
+  shotReviewMarkingOverlay.addEventListener("pointerup", async (e) => {
+    if (!shotMarkingMode) return;
+
+    if (shotMarkingTool === "erase") {
+      await eraseShotMarkingAt(shotEventToNormalizedPoint(e));
+      return;
+    }
+
+    // ---- 描くモード(STEP13から維持) ----
+    if (!shotMarkStroke) return;
+    const strokePoints = shotMarkStroke;
+    shotMarkStroke = null;
+    if (strokePoints.length < 2 || !shotFrameBuffer || !shotPlayback || !currentReviewShotId) {
+      redrawShotReviewMarkingOverlay();
+      return;
+    }
+    // relTimeは、確定した瞬間に実際に表示されている実フレームの時刻をそのまま使う
+    // (連続値のplaybackTimeではなく、BufferEngine.findFrameAt()の結果を使うことで、
+    // 表示側のvisibleShotMarkings()と誤差なく完全一致比較できるようにする)。
+    const frame = BufferEngine.findFrameAt(shotFrameBuffer, shotPlayback.playbackTime);
+    if (!frame) {
+      redrawShotReviewMarkingOverlay();
+      return;
+    }
+    const marking = {
+      id: CoordinateEngine.generateMarkingId(),
+      shotId: currentReviewShotId,
+      relTime: frame.time,
+      type: "freehand",
+      points: strokePoints.map((p) => CoordinateEngine.clampNormalizedPoint(p)),
+      createdAt: Date.now(),
+    };
+    shotMarkings.push(marking);
+    redrawShotReviewMarkingOverlay();
+    // ストローク完了時に自動保存する(明示的な「保存」ボタンは追加しない)
+    try {
+      await StorageEngine.saveMarking(marking);
+    } catch (err) {
+      console.error("マーキングの保存に失敗しました:", err);
+    }
+  });
+
   async function openShotReview(shot) {
     shotReviewTitle.textContent = formatShotDate(shot.createdAt) + "（" + (shot.durationMs / 1000).toFixed(1) + "秒）";
     shotReviewOverlay.style.display = "flex";
@@ -1184,33 +1501,53 @@
     shotDurationMs = shotFrameBuffer[shotFrameBuffer.length - 1].time;
     shotReviewCanvas.width = shotFrameBuffer[0].bitmap.width;
     shotReviewCanvas.height = shotFrameBuffer[0].bitmap.height;
+    syncShotReviewMarkingOverlaySize();
 
-    // delaySecondsに非常に大きな値を与えることで、PlaybackEngine内部のnewestAllowed
-    // (nowMs - delaySeconds*1000)による上限クランプが実質的に効かないようにし、
-    // 上限(shotDurationMs)はこちら側で明示的にクランプする(下限0はoldestAvailableTime=0で
-    // PlaybackEngine自身が正しく扱える)。PlaybackEngineのコード自体は一切変更していない。
-    shotPlayback = new PlaybackEngine.PlaybackEngine({ delaySeconds: 1e9 });
-    shotPlayback.update(performance.now(), 0);
+    // STEP13: この射に紐づくマーキングを読み込む。失敗しても動画レビュー自体は続行する。
+    currentReviewShotId = shot.id;
+    try {
+      shotMarkings = await StorageEngine.loadShotMarkings(shot.id);
+    } catch (err) {
+      console.error("マーキングの読み込みに失敗しました:", err);
+      shotMarkings = [];
+    }
+    setShotMarkingMode(false); // 開くたびにOFFから開始する
+
+    // レビューを開くたびに、レビュー専用スロー設定を常にデフォルトへ戻す
+    // (ライブの現在設定を引き継がない。ライブとレビューは独立した操作環境とする)
+    reviewSlowRate = DEFAULT_SLOW_RATE;
+    reviewSlowWindowSec = DEFAULT_SLOW_WINDOW_SEC;
+    renderShotSlowRatePresets();
+    renderShotSlowWindowPresets();
+
+    reviewClockBase = null; // レビュー専用時計をこのセッション用にリセット
+    shotPlayback = new PlaybackEngine.PlaybackEngine({ delaySeconds: REVIEW_DELAY_SECONDS });
+    shotPlayback.update(reviewNow(performance.now()), 0);
     shotPlayback.seekToTime(0);
+    shotPlayback.playbackTime = clampReviewTime(shotPlayback.playbackTime);
     shotPlayback.pause();
     shotPlayPauseBtn.textContent = "再生";
+    updateShotReviewPosition();
 
     if (shotReviewRafId) cancelAnimationFrame(shotReviewRafId);
     const loop = (now) => {
       if (shotReviewOverlay.style.display === "none") return;
-      const t = shotPlayback.update(now, 0);
-      if (t > shotDurationMs) shotPlayback.playbackTime = shotDurationMs; // 保存済みクリップの終端でクランプ
+      const t = shotPlayback.update(reviewNow(now), 0);
+      shotPlayback.playbackTime = clampReviewTime(t); // 保存済みクリップの範囲(0〜shotDurationMs)でクランプ
       const frame = BufferEngine.findFrameAt(shotFrameBuffer, shotPlayback.playbackTime);
       if (frame) {
         shotCtx.drawImage(frame.bitmap, 0, 0, shotReviewCanvas.width, shotReviewCanvas.height);
       }
       shotPlayPauseBtn.textContent = shotPlayback.getStateLabel() === "PAUSE" ? "再生" : "一時停止";
+      updateShotReviewPosition();
+      redrawShotReviewMarkingOverlay(); // 再生時刻に応じて表示するマーキングが切り替わる(A案)
       shotReviewRafId = requestAnimationFrame(loop);
     };
     shotReviewRafId = requestAnimationFrame(loop);
   }
 
   function closeShotReview() {
+    setShotMarkingMode(false);
     shotReviewOverlay.style.display = "none";
     if (shotReviewRafId) cancelAnimationFrame(shotReviewRafId);
     shotReviewRafId = null;
@@ -1223,6 +1560,8 @@
     }
     shotFrameBuffer = null;
     shotPlayback = null;
+    shotMarkings = [];
+    currentReviewShotId = null;
   }
   shotReviewClose.addEventListener("click", closeShotReview);
   shotPlayPauseBtn.addEventListener("click", () => {
@@ -1235,15 +1574,32 @@
     const t = BufferEngine.getPreviousFrameTime(shotFrameBuffer, shotPlayback.playbackTime);
     if (t == null) return;
     shotPlayback.seekToTime(t);
-    shotPlayback.pause();
+    shotPlayback.playbackTime = clampReviewTime(shotPlayback.playbackTime);
+    shotPlayback.pause(); // 1F操作後は必ずPAUSE系で停止する(STEP8の仕様を維持)
+    updateShotReviewPosition();
   });
   shotStepForwardBtn.addEventListener("click", () => {
     if (!shotPlayback || !shotFrameBuffer) return;
     const t = BufferEngine.getNextFrameTime(shotFrameBuffer, shotPlayback.playbackTime);
     if (t == null || t > shotDurationMs) return;
     shotPlayback.seekToTime(t);
-    shotPlayback.pause();
+    shotPlayback.playbackTime = clampReviewTime(shotPlayback.playbackTime);
+    shotPlayback.pause(); // 1F操作後は必ずPAUSE系で停止する(STEP8の仕様を維持)
+    updateShotReviewPosition();
   });
+  shotSeekBackBtn.addEventListener("click", () => {
+    if (!shotPlayback) return;
+    shotPlayback.seekBy(-SEEK_STEP_SEC);
+    shotPlayback.playbackTime = clampReviewTime(shotPlayback.playbackTime);
+    updateShotReviewPosition();
+  });
+  shotSeekForwardBtn.addEventListener("click", () => {
+    if (!shotPlayback) return;
+    shotPlayback.seekBy(SEEK_STEP_SEC);
+    shotPlayback.playbackTime = clampReviewTime(shotPlayback.playbackTime);
+    updateShotReviewPosition();
+  });
+  shotSlowCheckBtn.addEventListener("click", reviewSlowCheck);
 
   flipBtn.addEventListener("click", async () => {
     facingMode = facingMode === "environment" ? "user" : "environment";

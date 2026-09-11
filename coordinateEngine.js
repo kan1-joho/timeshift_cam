@@ -273,6 +273,19 @@
           distancePointToSegment(point, m.points[0], m.points[1]),
           distancePointToSegment(point, m.points[1], m.points[2])
         );
+      case "freehand": {
+        // STEP14: レビュー画面の「消去」でfindNearestMarking()を使えるようにするための追加。
+        // 複数点をつないだ折れ線として扱い、各線分までの最短距離の最小値を取る
+        // (考え方は既存の"angle"ケース(2線分)と同じで、対象の線分数がN-1本になるだけ)。
+        if (!Array.isArray(m.points) || m.points.length === 0) return Infinity;
+        if (m.points.length === 1) return distancePointToPoint(point, m.points[0]);
+        let best = Infinity;
+        for (let i = 0; i < m.points.length - 1; i++) {
+          const d = distancePointToSegment(point, m.points[i], m.points[i + 1]);
+          if (d < best) best = d;
+        }
+        return best;
+      }
       default:
         return Infinity;
     }

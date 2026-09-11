@@ -12,12 +12,21 @@
 // データ構造:
 //   shots (メタデータ) ........ { id, createdAt, durationMs, delaySecondsAtCapture, frameCount }
 //   shotFrames (映像本体) ..... { shotId, relTime, blob }  ※shotIdごとに複数
+//   shotMarkings (STEP13で追加): { id, shotId, relTime, type, points, createdAt }  ※shotIdごとに複数
+//     ・座標はcoordinateEngine.jsの正規化座標(0.0〜1.0)のまま保存する。ピクセル座標は保存しない。
+//     ・relTimeは「そのマーキングを表示する射内の相対時刻(ms)」。shotFramesのrelTimeと同じ時間軸。
+//     ・本ファイルはマーキングの座標・種別の妥当性(coordinateEngine.jsの領分)には関知せず、
+//       レコードとして必要なフィールドが揃っているかだけを見る。
 // 「映像」と「映像に付随する情報」を別ストアに分離しているのは、将来マーキング等の
 // メタデータだけを追記・更新したい場合に、画像データ本体へ触れずに済むようにするため。
 //
 // 純粋関数部分(generateShotId/selectFramesInRange/computeSaveRange/buildFrameRecords/
-// buildShotMetadata/validateShotMetadata)はNode.jsから直接requireしてテストできる。
-// IndexedDBを使う部分(openDb/saveShot/listShots/loadShotFrames/deleteShot)はブラウザ専用。
+// buildShotMetadata/validateShotMetadata/validateMarkingRecord/markingRecordsForShot)は
+// Node.jsから直接requireしてテストできる。
+// IndexedDBを使う部分(openDb/saveShot/listShots/loadShotFrames/deleteShot/saveMarking/
+// loadShotMarkings/deleteMarking/deleteShotMarkings)はブラウザ専用。
+// STEP14で追加したdeleteMarking/deleteShotMarkingsは、既存のshotMarkingsストアに対する
+// 単純なレコード削除のみで、スキーマ変更を伴わない(DB_VERSIONは2のまま)。
 (function (root, factory) {
   if (typeof module === "object" && module.exports) {
     module.exports = factory();
@@ -28,9 +37,10 @@
   "use strict";
 
   const DB_NAME = "kyudoShotStorage";
-  const DB_VERSION = 1;
+  const DB_VERSION = 2; // STEP13: shotMarkingsストアを追加したためバージョンを上げる
   const SHOTS_STORE = "shots";
   const FRAMES_STORE = "shotFrames";
+  const MARKINGS_STORE = "shotMarkings";
 
   // 将来「70%/75%/85%へ変更しやすいように」定数化する。
   const DEFAULT_JPEG_QUALITY = 0.8;
@@ -106,6 +116,24 @@
     return allFrameRecords.filter((r) => r.shotId === shotId);
   }
 
+  // ---- STEP13: マーキングレコード(shotMarkings)まわりの純粋関数 ----
+  // 座標や種別そのものの妥当性(点なのか線なのか、正規化座標が0〜1に収まっているか等)は
+  // coordinateEngine.jsの領分であり、本ファイルは関知しない(依存も追加しない)。
+  // ここで見るのは、IndexedDBのレコードとして必要なフィールドが揃っているかだけ。
+  const REQUIRED_MARKING_FIELDS = ["id", "shotId", "relTime", "type", "points"];
+  function validateMarkingRecord(record) {
+    const missing = REQUIRED_MARKING_FIELDS.filter(
+      (k) => record[k] === undefined || record[k] === null
+    );
+    return { valid: missing.length === 0, missing: missing };
+  }
+
+  // 全マーキングレコードから指定shotIdに属するものだけを抽出する。
+  // frameRecordsForShotと同じ考え方(deleteShot()のカーソル絞り込みの整合性確認用)。
+  function markingRecordsForShot(allMarkingRecords, shotId) {
+    return allMarkingRecords.filter((r) => r.shotId === shotId);
+  }
+
   // frameRecords: buildFrameRecordsの戻り値([{relTime,...}])
   function buildShotMetadata(opts) {
     const frameRecords = opts.frameRecords || [];
@@ -122,6 +150,7 @@
   const api = {
     DEFAULT_JPEG_QUALITY: DEFAULT_JPEG_QUALITY,
     REQUIRED_SHOT_FIELDS: REQUIRED_SHOT_FIELDS,
+    REQUIRED_MARKING_FIELDS: REQUIRED_MARKING_FIELDS,
     generateShotId: generateShotId,
     selectFramesInRange: selectFramesInRange,
     computeSaveRange: computeSaveRange,
@@ -129,6 +158,8 @@
     validateShotMetadata: validateShotMetadata,
     buildShotMetadata: buildShotMetadata,
     frameRecordsForShot: frameRecordsForShot,
+    validateMarkingRecord: validateMarkingRecord,
+    markingRecordsForShot: markingRecordsForShot,
   };
 
   // ---------------------------------------------------------------
@@ -151,6 +182,13 @@
         if (!db.objectStoreNames.contains(FRAMES_STORE)) {
           const store = db.createObjectStore(FRAMES_STORE, { keyPath: ["shotId", "relTime"] });
           store.createIndex("byShotId", "shotId", { unique: false });
+        }
+        // STEP13: マーキングは同一shotId・同一relTimeが複数件ありうる(1フレームに複数本の線)ため、
+        // shotFramesのような複合キーにはせず、生成済みの一意なid(coordinateEngine.generateMarkingId())
+        // をキーにする。既存のSHOTS_STORE/FRAMES_STOREには一切触れない。
+        if (!db.objectStoreNames.contains(MARKINGS_STORE)) {
+          const markingStore = db.createObjectStore(MARKINGS_STORE, { keyPath: "id" });
+          markingStore.createIndex("byShotId", "shotId", { unique: false });
         }
       };
       req.onsuccess = () => resolve(req.result);
@@ -271,16 +309,103 @@
     return frames;
   }
 
+  /**
+   * 1件のマーキングをshotMarkingsへ保存する(ストローク完了時に自動保存する想定)。
+   * recordは呼び出し側(index.html)で { id, shotId, relTime, type, points, createdAt } の
+   * 形に組み立て済みであることを前提とし、ここではレコードとしての必須フィールドだけ検証する。
+   * 座標が正規化済みか等の妥当性はcoordinateEngine.js側(呼び出し側)の責務とする。
+   */
+  async function saveMarking(record) {
+    const { valid, missing } = validateMarkingRecord(record);
+    if (!valid) {
+      throw new Error("saveMarking: 必須フィールドが不足しています: " + missing.join(", "));
+    }
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(MARKINGS_STORE, "readwrite");
+      tx.objectStore(MARKINGS_STORE).put(record);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+    return record;
+  }
+
+  /** 指定shotに紐づくマーキングを、createdAt昇順(=描いた順)で返す */
+  async function loadShotMarkings(shotId) {
+    const db = await openDb();
+    const records = await new Promise((resolve, reject) => {
+      const tx = db.transaction(MARKINGS_STORE, "readonly");
+      const index = tx.objectStore(MARKINGS_STORE).index("byShotId");
+      const req = index.getAll(IDBKeyRange.only(shotId));
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    records.sort((a, b) => a.createdAt - b.createdAt);
+    return records;
+  }
+
+  /**
+   * STEP14: マーキングを1件だけ削除する(「消去」機能用)。
+   * shotMarkingsの単純なレコード削除であり、スキーマ変更は不要(DB_VERSIONは2のまま)。
+   */
+  async function deleteMarking(markingId) {
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(MARKINGS_STORE, "readwrite");
+      tx.objectStore(MARKINGS_STORE).delete(markingId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  }
+
+  /**
+   * STEP14: 指定shotに紐づくマーキングをすべて削除する(「全消去」機能用)。
+   * 他のshotのマーキングには一切触れない(byShotIdインデックスのカーソルで絞り込む、
+   * deleteShot()内のマーキング削除処理と同じ考え方)。
+   */
+  async function deleteShotMarkings(shotId) {
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(MARKINGS_STORE, "readwrite");
+      const index = tx.objectStore(MARKINGS_STORE).index("byShotId");
+      const cursorReq = index.openCursor(IDBKeyRange.only(shotId));
+      cursorReq.onsuccess = (ev) => {
+        const cursor = ev.target.result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  }
+
   /** shotのメタデータと、それに紐づく全フレームを削除する */
   async function deleteShot(shotId) {
     const db = await openDb();
     await new Promise((resolve, reject) => {
-      const tx = db.transaction([SHOTS_STORE, FRAMES_STORE], "readwrite");
+      const tx = db.transaction([SHOTS_STORE, FRAMES_STORE, MARKINGS_STORE], "readwrite");
       tx.objectStore(SHOTS_STORE).delete(shotId);
       const frameStore = tx.objectStore(FRAMES_STORE);
-      const index = frameStore.index("byShotId");
-      const cursorReq = index.openCursor(IDBKeyRange.only(shotId));
-      cursorReq.onsuccess = (ev) => {
+      const frameIndex = frameStore.index("byShotId");
+      const frameCursorReq = frameIndex.openCursor(IDBKeyRange.only(shotId));
+      frameCursorReq.onsuccess = (ev) => {
+        const cursor = ev.target.result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        }
+      };
+      // STEP13: 射を削除したら、紐づくマーキングも孤立させずに合わせて削除する。
+      const markingStore = tx.objectStore(MARKINGS_STORE);
+      const markingIndex = markingStore.index("byShotId");
+      const markingCursorReq = markingIndex.openCursor(IDBKeyRange.only(shotId));
+      markingCursorReq.onsuccess = (ev) => {
         const cursor = ev.target.result;
         if (cursor) {
           cursor.delete();
@@ -297,5 +422,9 @@
   api.listShots = listShots;
   api.loadShotFrames = loadShotFrames;
   api.deleteShot = deleteShot;
+  api.saveMarking = saveMarking;
+  api.loadShotMarkings = loadShotMarkings;
+  api.deleteMarking = deleteMarking;
+  api.deleteShotMarkings = deleteShotMarkings;
   return api;
 });
