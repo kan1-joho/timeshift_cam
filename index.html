@@ -273,9 +273,104 @@
   .shot-item:last-child { border-bottom: none; }
   .shot-item-info { font-size: 12px; color: var(--text); line-height: 1.5; }
   .shot-item-info span { display: block; color: var(--text-dim); font-size: 10px; }
-  .shot-item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .shot-item-actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
   .shot-item-actions button { padding: 6px 10px; font-size: 11px; }
   .shot-delete { color: var(--accent); border-color: var(--accent-dim); }
+  .shot-compare-check { width: 18px; height: 18px; accent-color: var(--accent); }
+  .shot-compare-slot {
+    display: inline-block; min-width: 14px;
+    font-size: 10px; font-weight: 600; color: var(--accent);
+    text-align: center;
+  }
+
+  #compareStartBtn {
+    margin-top: 8px; width: 100%; padding: 8px; font-size: 12px;
+    border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-dim);
+  }
+  #compareStartBtn:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+  #compareStartBtn:disabled { opacity: 0.5; }
+
+  /* ---- STEP15: 保存済み射 x 保存済み射 「2画面比較」 ---- */
+  #comparisonOverlay {
+    position: fixed; inset: 0; z-index: 999;
+    background: #000;
+    display: flex; flex-direction: column;
+  }
+  #comparisonHeader {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: max(10px, env(safe-area-inset-top)) 14px 8px;
+    background: var(--bg-panel);
+    font-size: 13px; color: var(--text);
+  }
+  #comparisonClose {
+    font-size: 12px; padding: 6px 12px; border-radius: 8px;
+    background: transparent; border: 1px solid var(--line); color: var(--text-dim);
+  }
+  #comparisonSyncToggle {
+    font-size: 11px; padding: 5px 10px; border-radius: 6px;
+    background: transparent; border: 1px solid var(--line); color: var(--text-dim);
+  }
+  #comparisonSyncToggle.on { color: var(--accent); border-color: var(--accent); }
+  #comparisonSyncBar {
+    display: none;
+    align-items: center; justify-content: space-between;
+    padding: 4px 14px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--line);
+    font-size: 11px; color: var(--accent);
+  }
+  #comparisonSyncBar span:last-child {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--text-dim);
+  }
+  #comparisonError {
+    padding: 8px 14px; color: var(--warn); font-size: 12px; text-align: center;
+  }
+  #comparisonPanels {
+    flex: 1; min-height: 0; display: flex; flex-direction: row;
+  }
+  .comparison-panel {
+    flex: 1; min-width: 0; display: flex; flex-direction: column;
+    border-left: 1px solid var(--line);
+  }
+  .comparison-panel:first-child { border-left: none; }
+  .comparison-panel-title {
+    font-size: 11px; color: var(--text-dim); text-align: center;
+    padding: 5px 4px; background: var(--bg-panel);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .comparison-stage {
+    position: relative; flex: 1; min-height: 0; background: #000;
+  }
+  .comparison-canvas {
+    width: 100%; height: 100%; object-fit: contain; background: #000; display: block;
+  }
+  .comparison-marking-overlay {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: contain; pointer-events: none;
+  }
+  .comparison-position {
+    text-align: center; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; color: var(--text-dim); margin: 4px 0;
+  }
+  .comparison-controls {
+    padding: 6px 8px max(6px, env(safe-area-inset-bottom));
+    background: var(--bg-panel);
+  }
+  .comparison-controls .row button { font-size: 11px; padding: 6px 4px; }
+  .comparison-controls .row { margin-bottom: 6px; }
+  .comparison-mark-toggle {
+    font-size: 10px; padding: 4px 8px; border-radius: 6px;
+    background: transparent; border: 1px solid var(--line); color: var(--text-dim);
+    width: 100%;
+  }
+  .comparison-mark-toggle.on { color: var(--accent); border-color: var(--accent); }
+
+  @media (max-width: 700px) and (orientation: portrait) {
+    #comparisonPanels { flex-direction: column; }
+    .comparison-panel { border-left: none; border-top: 1px solid var(--line); }
+    .comparison-panel:first-child { border-top: none; }
+  }
 
   /* ---- 保存済み射の再生オーバーレイ ---- */
   #shotReviewOverlay {
@@ -456,6 +551,7 @@
 
       <div class="label" style="margin-top:14px">保存した射</div>
       <div id="shotList" class="hint-note">まだ保存された射はありません。</div>
+      <button id="compareStartBtn" disabled>比較する（0/2）</button>
 
       <p class="hint-note">「現在へ」は設定した遅延時間を維持したまま、通常の遅延再生位置に戻ります（リアルタイム映像ではありません）。</p>
       <p id="privacyNote">映像は端末内でのみ処理され、外部には送信・保存されません。</p>
@@ -500,6 +596,70 @@
     <div class="row" id="shotSlowRatePresets"></div>
     <div class="label" style="margin-top:8px">範囲</div>
     <div class="row" id="shotSlowWindowPresets"></div>
+  </div>
+</div>
+
+<!-- STEP15: 保存済み射 x 保存済み射の2画面比較。単一レビュー(shotPlayback等)とは
+     完全に独立したA/B状態(comparisonA/comparisonB)を使う。表示専用(マーキングの
+     描画・消去はここでは行わない)。IndexedDBへの書き込みは一切行わない。 -->
+<div id="comparisonOverlay" style="display:none">
+  <div id="comparisonHeader">
+    <span>2射比較</span>
+    <button id="comparisonSyncToggle">同期：OFF</button>
+    <button id="comparisonClose">比較終了</button>
+  </div>
+  <div id="comparisonSyncBar" style="display:none">
+    <span>同期ON：A・Bを同じ位置で再生</span>
+    <span id="comparisonSyncTimeDisplay">共通位置 00:00.00</span>
+  </div>
+  <div id="comparisonError" style="display:none"></div>
+  <div id="comparisonPanels">
+    <div class="comparison-panel">
+      <div class="comparison-panel-title" id="comparisonTitleA">射A</div>
+      <div class="comparison-stage">
+        <canvas class="comparison-canvas" id="comparisonCanvasA"></canvas>
+        <canvas class="comparison-marking-overlay" id="comparisonMarkOverlayA"></canvas>
+      </div>
+      <p class="comparison-position" id="comparisonPositionA">0.0 / 0.0秒</p>
+      <div class="comparison-controls">
+        <div class="row">
+          <button data-ch="A" data-act="seekBack" class="seek-major">◀5秒</button>
+          <button data-ch="A" data-act="playPause" class="primary grow2">再生</button>
+          <button data-ch="A" data-act="seekFwd" class="seek-minor">5秒▶</button>
+        </div>
+        <div class="row">
+          <button data-ch="A" data-act="stepBack" class="wide">1F◀</button>
+          <button data-ch="A" data-act="slowCheck" class="wide">スロー確認</button>
+          <button data-ch="A" data-act="stepFwd" class="wide">▶1F</button>
+        </div>
+        <button data-ch="A" data-act="markingToggle" id="comparisonMarkToggleA" class="comparison-mark-toggle">マーキング表示</button>
+        <div class="row" id="comparisonRatePresetsA" style="margin-top:6px"></div>
+        <div class="row" id="comparisonWindowPresetsA"></div>
+      </div>
+    </div>
+    <div class="comparison-panel">
+      <div class="comparison-panel-title" id="comparisonTitleB">射B</div>
+      <div class="comparison-stage">
+        <canvas class="comparison-canvas" id="comparisonCanvasB"></canvas>
+        <canvas class="comparison-marking-overlay" id="comparisonMarkOverlayB"></canvas>
+      </div>
+      <p class="comparison-position" id="comparisonPositionB">0.0 / 0.0秒</p>
+      <div class="comparison-controls">
+        <div class="row">
+          <button data-ch="B" data-act="seekBack" class="seek-major">◀5秒</button>
+          <button data-ch="B" data-act="playPause" class="primary grow2">再生</button>
+          <button data-ch="B" data-act="seekFwd" class="seek-minor">5秒▶</button>
+        </div>
+        <div class="row">
+          <button data-ch="B" data-act="stepBack" class="wide">1F◀</button>
+          <button data-ch="B" data-act="slowCheck" class="wide">スロー確認</button>
+          <button data-ch="B" data-act="stepFwd" class="wide">▶1F</button>
+        </div>
+        <button data-ch="B" data-act="markingToggle" id="comparisonMarkToggleB" class="comparison-mark-toggle">マーキング表示</button>
+        <div class="row" id="comparisonRatePresetsB" style="margin-top:6px"></div>
+        <div class="row" id="comparisonWindowPresetsB"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -613,6 +773,16 @@
   const shotSlowCheckBtn = document.getElementById("shotSlowCheck");
   const shotSlowRatePresetsRow = document.getElementById("shotSlowRatePresets");
   const shotSlowWindowPresetsRow = document.getElementById("shotSlowWindowPresets");
+
+  // ---- STEP15: 保存済み射 x 保存済み射 「2画面比較」 ----
+  const compareStartBtn = document.getElementById("compareStartBtn");
+  const comparisonOverlay = document.getElementById("comparisonOverlay");
+  const comparisonCloseBtn = document.getElementById("comparisonClose");
+  const comparisonSyncToggleBtn = document.getElementById("comparisonSyncToggle");
+  const comparisonSyncBar = document.getElementById("comparisonSyncBar");
+  const comparisonSyncTimeDisplayEl = document.getElementById("comparisonSyncTimeDisplay");
+  const comparisonErrorEl = document.getElementById("comparisonError");
+  const comparisonPanelsEl = document.getElementById("comparisonPanels");
   const shotReviewTitle = document.getElementById("shotReviewTitle");
   const shotReviewClose = document.getElementById("shotReviewClose");
   const markingOverlay = document.getElementById("markingOverlay");
@@ -1157,6 +1327,20 @@
       " " + pad(d.getHours()) + ":" + pad(d.getMinutes())
     );
   }
+  // STEP15: 比較対象として選択中の射(最大2件、選択順)。ライブ/単一レビューの状態とは無関係。
+  let compareSelection = [];
+  function updateCompareStartButton() {
+    compareStartBtn.disabled = compareSelection.length !== 2;
+    compareStartBtn.textContent = "比較する（" + compareSelection.length + "/2）";
+  }
+  // STEP17(§9): 一覧上の各チェックボックス横に、選択順(A/B)を表示する
+  function refreshCompareSlotLabels() {
+    document.querySelectorAll(".shot-compare-slot").forEach((el) => {
+      const idx = compareSelection.findIndex((s) => s.id === el.dataset.shotId);
+      el.textContent = idx === 0 ? "A" : idx === 1 ? "B" : "";
+    });
+  }
+
   async function refreshShotList() {
     let shots = [];
     try {
@@ -1164,10 +1348,15 @@
     } catch (err) {
       console.error(err);
       shotListEl.textContent = "一覧の読み込みに失敗しました。";
+      compareSelection = [];
+      updateCompareStartButton();
       return;
     }
+    // 削除等で選択済みの射が一覧から消えていた場合、比較選択からも取り除く
+    compareSelection = compareSelection.filter((sel) => shots.some((s) => s.id === sel.id));
     if (!shots.length) {
       shotListEl.textContent = "まだ保存された射はありません。";
+      updateCompareStartButton();
       return;
     }
     shotListEl.innerHTML = "";
@@ -1184,6 +1373,30 @@
           "<span>" + (shot.durationMs / 1000).toFixed(1) + "秒</span>";
         const actions = document.createElement("div");
         actions.className = "shot-item-actions";
+
+        // STEP15: 比較対象として選ぶためのチェックボックス(最大2件)
+        const compareCheck = document.createElement("input");
+        compareCheck.type = "checkbox";
+        compareCheck.className = "shot-compare-check";
+        compareCheck.title = "比較対象として選択";
+        compareCheck.checked = compareSelection.some((s) => s.id === shot.id);
+        // STEP17(§9): 選択順が一目で分かるよう、チェックボックスの隣に"A"/"B"を表示する
+        const compareSlotLabel = document.createElement("span");
+        compareSlotLabel.className = "shot-compare-slot";
+        compareCheck.addEventListener("change", () => {
+          if (compareCheck.checked) {
+            if (compareSelection.length >= 2) {
+              compareCheck.checked = false; // 3件目以降は選択させない
+              return;
+            }
+            compareSelection.push(shot);
+          } else {
+            compareSelection = compareSelection.filter((s) => s.id !== shot.id);
+          }
+          updateCompareStartButton();
+          refreshCompareSlotLabels();
+        });
+
         const playBtn = document.createElement("button");
         playBtn.textContent = "再生";
         playBtn.addEventListener("click", () => openShotReview(shot));
@@ -1201,12 +1414,17 @@
             delBtn.disabled = false;
           }
         });
+        compareSlotLabel.dataset.shotId = shot.id;
+        actions.appendChild(compareCheck);
+        actions.appendChild(compareSlotLabel);
         actions.appendChild(playBtn);
         actions.appendChild(delBtn);
         item.appendChild(info);
         item.appendChild(actions);
         shotListEl.appendChild(item);
       });
+    updateCompareStartButton();
+    refreshCompareSlotLabels();
   }
 
   // ---- 保存済み射の再生 ----
@@ -1482,6 +1700,469 @@
       console.error("マーキングの保存に失敗しました:", err);
     }
   });
+
+  // =================================================================
+  // STEP15: 保存済み射 x 保存済み射「2画面比較」
+  // 単一レビュー(shotPlayback/shotFrameBuffer/shotMarkings等)とは完全に独立。
+  // A/Bそれぞれの状態を1つの「チャンネル」オブジェクトにまとめ、共通の関数を
+  // 2回(A用・B用)呼び出す形にすることで、ロジックの二重実装を避ける。
+  // 表示専用(マーキングの描画・消去はしない)。IndexedDBへは一切書き込まない。
+  // =================================================================
+
+  function createComparisonChannel(label) {
+    const canvas = document.getElementById("comparisonCanvas" + label);
+    const markOverlay = document.getElementById("comparisonMarkOverlay" + label);
+    return {
+      label: label,
+      shotId: null,
+      frameBuffer: null, // StorageEngine.loadShotFrames()の戻り値をそのまま保持する(複製しない)
+      durationMs: 0,
+      playback: null, // 比較専用の独立したPlaybackEngineインスタンス(shotPlaybackとは別物)
+      markings: [],
+      markingMode: false, // 表示ON/OFF(STEP15では描画・消去はしない)
+      slowRate: DEFAULT_SLOW_RATE, // ライブ/単一レビューの現在値は引き継がない(比較専用の初期値)
+      slowWindowSec: DEFAULT_SLOW_WINDOW_SEC,
+      clockBase: null, // レビュー同様、実時刻に依存しない擬似時計をチャンネルごとに独立して持つ
+      canvas: canvas,
+      ctx: canvas.getContext("2d", { alpha: false }),
+      markOverlay: markOverlay,
+      markCtx: markOverlay.getContext("2d"),
+      positionEl: document.getElementById("comparisonPosition" + label),
+      titleEl: document.getElementById("comparisonTitle" + label),
+      playPauseBtn: document.querySelector('#comparisonPanels button[data-ch="' + label + '"][data-act="playPause"]'),
+      markToggleBtn: document.getElementById("comparisonMarkToggle" + label),
+      ratePresetsRow: document.getElementById("comparisonRatePresets" + label),
+      windowPresetsRow: document.getElementById("comparisonWindowPresets" + label),
+    };
+  }
+  const comparisonA = createComparisonChannel("A");
+  const comparisonB = createComparisonChannel("B");
+  let comparisonRafId = null;
+
+  // ---- STEP16: A/B同期 ----
+  // comparisonA/comparisonBそれぞれの独立構造(frameBuffer/playback等)は一切変更しない。
+  // 同期は「比較セッション全体の状態」として、この2つの変数だけを追加する。
+  let comparisonSyncEnabled = false;
+  let comparisonSyncTime = 0; // 同期中の「共通時間」(ms)。各チャンネルへ適用する際は必ずclampComparisonTime()を通す。
+
+  /**
+   * 同期中の「共通位置」表示用フォーマッタ(§6)。動画ファイルの絶対時刻ではなく、
+   * あくまで比較用の相対時間(ms)を mm:ss.cc 形式にするだけの表示ヘルパー。
+   */
+  function formatComparisonClock(ms) {
+    const totalCentiseconds = Math.max(0, Math.round(ms / 10));
+    const cs = totalCentiseconds % 100;
+    const totalSeconds = Math.floor(totalCentiseconds / 100);
+    const s = totalSeconds % 60;
+    const m = Math.floor(totalSeconds / 60);
+    const pad2 = (n) => String(n).padStart(2, "0");
+    return pad2(m) + ":" + pad2(s) + "." + pad2(cs);
+  }
+  function updateComparisonSyncDisplay() {
+    if (!comparisonSyncEnabled) return;
+    comparisonSyncTimeDisplayEl.textContent = "共通位置 " + formatComparisonClock(comparisonSyncTime);
+  }
+
+  /**
+   * 同期用の共通時間を設定し、A/B両方へ適用する(3節: 各チャンネルは自分のdurationでクランプされる)。
+   * pauseAfterがtrueの場合、STEP8以来の「1F操作後は必ずPAUSE系で停止する」仕様を両チャンネルに適用する。
+   */
+  function setComparisonTime(timeMs, pauseAfter) {
+    comparisonSyncTime = timeMs;
+    [comparisonA, comparisonB].forEach((channel) => {
+      if (!channel.playback) return;
+      const t = clampComparisonTime(channel, timeMs);
+      channel.playback.seekToTime(t);
+      channel.playback.playbackTime = t;
+      if (pauseAfter) channel.playback.pause();
+      channel.playPauseBtn.textContent = channel.playback.getStateLabel() === "PAUSE" ? "再生" : "一時停止";
+      updateComparisonPosition(channel);
+      redrawComparisonMarkings(channel);
+    });
+    updateComparisonSyncDisplay();
+  }
+
+  /** 同期ON/OFFを切り替える(9〜10節のUI、4節・7-1節のON時の初期化)。 */
+  function setComparisonSync(on) {
+    comparisonSyncEnabled = on;
+    comparisonSyncToggleBtn.textContent = "同期：" + (on ? "ON" : "OFF");
+    comparisonSyncToggleBtn.classList.toggle("on", on);
+    comparisonSyncBar.style.display = on ? "flex" : "none";
+    if (!on) {
+      // 8節: 同期中はcomparisonB.playback.update()を呼んでいない(位置はAから直接反映していた)ため、
+      // Bの内部時計(_lastNow等)は同期していた間ずっと止まったまま。このままOFFにすると、次に
+      // Bのupdate()が呼ばれた瞬間、同期していた分の経過時間をまとめて溜め込んだdtとして適用してしまい、
+      // 再生中であれば位置が一気に飛んでしまう。表示位置(playbackTime)は変えずに、内部時計だけを
+      // 現在時刻へ再同期しておく(PlaybackEngine自体は変更せず、公開されているplaybackTimeの
+      // 読み書きとupdate()の呼び出しだけで行う)。
+      if (comparisonB.playback) {
+        const keepTime = comparisonB.playback.playbackTime;
+        comparisonB.playback.update(comparisonNow(comparisonB, performance.now()), 0);
+        comparisonB.playback.playbackTime = keepTime;
+      }
+      return; // OFFにしただけなら、以後は完全独立に戻すだけで良い(8節: 過去状態の復元は不要)
+    }
+    if (!comparisonA.playback || !comparisonB.playback) return;
+    // 4節: ONにした瞬間、両方を一旦停止してから、Aを基準にBを合わせる(挙動を明確にするため)
+    comparisonA.playback.pause();
+    comparisonB.playback.pause();
+    // 7-1節: 現在のA設定を共通のスロー設定として採用する
+    comparisonB.slowRate = comparisonA.slowRate;
+    comparisonB.slowWindowSec = comparisonA.slowWindowSec;
+    renderComparisonRatePresets(comparisonA);
+    renderComparisonRatePresets(comparisonB);
+    renderComparisonWindowPresets(comparisonA);
+    renderComparisonWindowPresets(comparisonB);
+    setComparisonTime(comparisonA.playback.playbackTime, false);
+  }
+  comparisonSyncToggleBtn.addEventListener("click", () => setComparisonSync(!comparisonSyncEnabled));
+
+  function comparisonNow(channel, realNow) {
+    if (channel.clockBase === null) channel.clockBase = realNow;
+    return REVIEW_TIME_HEADROOM_MS + (realNow - channel.clockBase);
+  }
+  function clampComparisonTime(channel, t) {
+    return Math.max(0, Math.min(channel.durationMs, t));
+  }
+  function updateComparisonPosition(channel) {
+    const cur = (channel.playback ? channel.playback.playbackTime : 0) / 1000;
+    channel.positionEl.textContent = cur.toFixed(1) + " / " + (channel.durationMs / 1000).toFixed(1) + "秒";
+  }
+  // STEP13のA方式(relTime完全一致)をそのまま維持する
+  function visibleComparisonMarkings(channel) {
+    if (!channel.frameBuffer || !channel.frameBuffer.length || !channel.playback) return [];
+    const frame = BufferEngine.findFrameAt(channel.frameBuffer, channel.playback.playbackTime);
+    if (!frame) return [];
+    return channel.markings.filter((m) => m.relTime === frame.time);
+  }
+  function redrawComparisonMarkings(channel) {
+    const w = channel.markOverlay.width, h = channel.markOverlay.height;
+    if (!w || !h) return;
+    channel.markCtx.clearRect(0, 0, w, h);
+    if (!channel.markingMode) return; // OFFなら何も描画しない(STEP15は表示のみ)
+    // drawShotMarkingShape()はSTEP13で定義済みの、レビュー側マーキング描画関数をそのまま再利用する
+    visibleComparisonMarkings(channel).forEach((m) => drawShotMarkingShape(channel.markCtx, m, w, h));
+  }
+  function setComparisonMarkingMode(channel, on) {
+    channel.markingMode = on;
+    channel.markToggleBtn.classList.toggle("on", on);
+    redrawComparisonMarkings(channel);
+  }
+  function renderComparisonRatePresets(channel) {
+    channel.ratePresetsRow.innerHTML = "";
+    SLOW_RATE_OPTIONS.forEach((rate) => {
+      const b = document.createElement("button");
+      b.textContent = rateFractionLabel(rate);
+      b.className = Math.abs(rate - channel.slowRate) < 0.001 ? "selected" : "";
+      b.addEventListener("click", () => setComparisonSlowRate(channel, rate));
+      channel.ratePresetsRow.appendChild(b);
+    });
+  }
+  function renderComparisonWindowPresets(channel) {
+    channel.windowPresetsRow.innerHTML = "";
+    SLOW_WINDOW_OPTIONS.forEach((sec) => {
+      const b = document.createElement("button");
+      b.textContent = sec + "秒";
+      b.className = sec === channel.slowWindowSec ? "selected" : "";
+      b.addEventListener("click", () => setComparisonSlowWindow(channel, sec));
+      channel.windowPresetsRow.appendChild(b);
+    });
+  }
+  // STEP16: 同期ONの場合、片方の速度/範囲変更をもう片方にも反映する(7-2節)。
+  // 同期OFFの場合はSTEP15と同じく、操作したチャンネルだけを変更する。
+  function setComparisonSlowRate(channel, rate) {
+    if (comparisonSyncEnabled) {
+      comparisonA.slowRate = rate;
+      comparisonB.slowRate = rate;
+      renderComparisonRatePresets(comparisonA);
+      renderComparisonRatePresets(comparisonB);
+    } else {
+      channel.slowRate = rate;
+      renderComparisonRatePresets(channel);
+    }
+  }
+  function setComparisonSlowWindow(channel, sec) {
+    if (comparisonSyncEnabled) {
+      comparisonA.slowWindowSec = sec;
+      comparisonB.slowWindowSec = sec;
+      renderComparisonWindowPresets(comparisonA);
+      renderComparisonWindowPresets(comparisonB);
+    } else {
+      channel.slowWindowSec = sec;
+      renderComparisonWindowPresets(channel);
+    }
+  }
+  function comparisonSlowCheck(channel) {
+    if (!channel.playback) return;
+    // 単一レビューと同じ考え方: 比較には「ライブへ戻る」概念が無いため、区間終端で一時停止する
+    channel.playback.playRecentWindow(channel.slowWindowSec, channel.slowRate, () => channel.playback.pause());
+  }
+  // STEP16: 同期中の「スロー確認」(7-3節)。同期中はcomparisonLoop側で毎フレームBの
+  // playbackTime/playbackRateをAからそのまま反映しており、B自身のPlaybackEngine.update()は
+  // 呼ばれない。そのためBに対してもplayRecentWindow()を発行してしまうと、Bの内部状態
+  // (_slowEndTime等)が消費されないまま残ってしまう(同期OFFに戻した瞬間に誤発火するおそれが
+  // ある)。したがって、駆動側であるAだけにplayRecentWindow()を発行する。
+  function comparisonSyncSlowCheck() {
+    if (!comparisonA.playback || !comparisonB.playback) return;
+    comparisonA.playback.playRecentWindow(comparisonA.slowWindowSec, comparisonA.slowRate, () => {
+      comparisonA.playback.pause();
+      comparisonB.playback.pause();
+    });
+  }
+
+  /** 指定チャンネルへ射を読み込む(A/Bどちらにも同じ関数を使う。ロジックの二重実装を避ける)。 */
+  async function loadShotIntoChannel(channel, shot) {
+    channel.shotId = shot.id;
+    channel.titleEl.textContent =
+      channel.label + "：" + formatShotDate(shot.createdAt) + "（" + (shot.durationMs / 1000).toFixed(1) + "秒）";
+    // StorageEngine.loadShotFrames()の戻り値をそのまま保持する(不要な複製はしない)
+    channel.frameBuffer = await StorageEngine.loadShotFrames(shot.id);
+    if (!channel.frameBuffer.length) {
+      throw new Error("フレームが空です: " + shot.id);
+    }
+    channel.durationMs = channel.frameBuffer[channel.frameBuffer.length - 1].time;
+    channel.canvas.width = channel.frameBuffer[0].bitmap.width;
+    channel.canvas.height = channel.frameBuffer[0].bitmap.height;
+    channel.markOverlay.width = channel.canvas.width;
+    channel.markOverlay.height = channel.canvas.height;
+
+    try {
+      channel.markings = await StorageEngine.loadShotMarkings(shot.id);
+    } catch (err) {
+      console.error("マーキングの読み込みに失敗しました:", err);
+      channel.markings = [];
+    }
+    setComparisonMarkingMode(false);
+
+    // 比較専用の初期値から開始する(ライブ/単一レビューの現在値は引き継がない)
+    channel.slowRate = DEFAULT_SLOW_RATE;
+    channel.slowWindowSec = DEFAULT_SLOW_WINDOW_SEC;
+    renderComparisonRatePresets(channel);
+    renderComparisonWindowPresets(channel);
+
+    // STEP12で発生した「delaySeconds:1e9」問題を再発させないため、単一レビューと同じ
+    // reviewNow()方式(実時刻に依存しない擬似時計＋明示クランプ)をチャンネルごとに使う。
+    channel.clockBase = null;
+    channel.playback = new PlaybackEngine.PlaybackEngine({ delaySeconds: REVIEW_DELAY_SECONDS });
+    channel.playback.update(comparisonNow(channel, performance.now()), 0);
+    channel.playback.seekToTime(0);
+    channel.playback.playbackTime = clampComparisonTime(channel, channel.playback.playbackTime);
+    channel.playback.pause();
+    channel.playPauseBtn.textContent = "再生";
+    updateComparisonPosition(channel);
+    redrawComparisonMarkings(channel);
+  }
+
+  /** チャンネルの状態を解放する(閉じる時、または読み込み失敗時のロールバック用)。 */
+  function releaseComparisonChannel(channel) {
+    if (channel.frameBuffer) {
+      for (const f of channel.frameBuffer) {
+        try { f.bitmap.close(); } catch (e) {}
+      }
+    }
+    channel.frameBuffer = null;
+    channel.playback = null;
+    channel.markings = [];
+    channel.shotId = null;
+    channel.durationMs = 0;
+  }
+
+  /** チャンネルの再生位置だけを1フレーム分前進させる(クランプ込み)。描画は行わない。 */
+  function advanceComparisonChannel(channel, now) {
+    if (!channel.playback || !channel.frameBuffer) return;
+    const t = channel.playback.update(comparisonNow(channel, now), 0);
+    channel.playback.playbackTime = clampComparisonTime(channel, t);
+  }
+
+  /** チャンネルの現在のplaybackTimeに基づいて、映像・ボタンラベル・位置表示・マーキングを描画する。 */
+  function drawComparisonChannelVisual(channel) {
+    if (!channel.playback || !channel.frameBuffer) return;
+    const frame = BufferEngine.findFrameAt(channel.frameBuffer, channel.playback.playbackTime);
+    if (frame) {
+      channel.ctx.drawImage(frame.bitmap, 0, 0, channel.canvas.width, channel.canvas.height);
+    }
+    channel.playPauseBtn.textContent = channel.playback.getStateLabel() === "PAUSE" ? "再生" : "一時停止";
+    updateComparisonPosition(channel);
+    redrawComparisonMarkings(channel);
+  }
+
+  /** 1チャンネル分の毎フレーム更新(前進+描画)。同期OFF時、A/Bそれぞれ独立にこれを呼ぶ。 */
+  function updateComparisonChannelFrame(channel, now) {
+    advanceComparisonChannel(channel, now);
+    drawComparisonChannelVisual(channel);
+  }
+
+  // A用・B用に別々のrequestAnimationFrameループを作らず、1つのループでA→Bの順に更新する。
+  // (14節) 同期ONの場合のみ、Aを駆動チャンネルとして通常通り前進させ、その結果(共通時間)を
+  // Bへそのままクランプ適用する。Bの独自のPlaybackEngine.update()は同期中は呼ばない
+  // (Aのframe.timeをBのframe.timeとして直接扱うことは禁止のため、時間軸そのものではなく
+  // 「Aが前進した後のplaybackTime」を共通時間として扱い、Bはそれをクランプして受け取るだけ)。
+  function comparisonLoop(now) {
+    if (comparisonOverlay.style.display === "none") return; // 閉じていたら自然に止まる
+    if (comparisonSyncEnabled) {
+      advanceComparisonChannel(comparisonA, now);
+      comparisonSyncTime = comparisonA.playback.playbackTime;
+      updateComparisonSyncDisplay();
+      if (comparisonB.playback) {
+        comparisonB.playback.playbackTime = clampComparisonTime(comparisonB, comparisonSyncTime);
+        // 再生状態(速度含む)もAに揃える(6節: 同期中はA/Bを別々の再生状態にしない)
+        comparisonB.playback.playbackRate = comparisonA.playback.playbackRate;
+      }
+      drawComparisonChannelVisual(comparisonA);
+      drawComparisonChannelVisual(comparisonB);
+    } else {
+      updateComparisonChannelFrame(comparisonA, now);
+      updateComparisonChannelFrame(comparisonB, now);
+    }
+    comparisonRafId = requestAnimationFrame(comparisonLoop);
+  }
+
+  function showComparisonError(message) {
+    comparisonErrorEl.textContent = message;
+    comparisonErrorEl.style.display = "block";
+  }
+
+  async function openComparison(shotA, shotB) {
+    if (!shotA || !shotB || shotA.id === shotB.id) {
+      // 7節: 同じ射をA/B両方に選ぶことは禁止(通常はチェックボックス側で起こらないが念のため)
+      alert("同じ射は2つの比較対象に選択できません。");
+      return;
+    }
+    comparisonErrorEl.style.display = "none";
+    comparisonOverlay.style.display = "flex";
+    setComparisonSync(false); // 16節: 開くたびに必ず同期OFFから開始する
+    try {
+      // 35節: 両方の読み込みが完了してから表示する(中途半端な状態で見せない)
+      await Promise.all([loadShotIntoChannel(comparisonA, shotA), loadShotIntoChannel(comparisonB, shotB)]);
+    } catch (err) {
+      console.error(err);
+      releaseComparisonChannel(comparisonA);
+      releaseComparisonChannel(comparisonB);
+      comparisonOverlay.style.display = "none";
+      showComparisonError("比較対象の読み込みに失敗しました");
+      return;
+    }
+    if (comparisonRafId) cancelAnimationFrame(comparisonRafId);
+    comparisonRafId = requestAnimationFrame(comparisonLoop);
+  }
+
+  function closeComparison() {
+    comparisonOverlay.style.display = "none";
+    if (comparisonRafId) cancelAnimationFrame(comparisonRafId);
+    comparisonRafId = null;
+    releaseComparisonChannel(comparisonA);
+    releaseComparisonChannel(comparisonB);
+    // 16節: 比較セッションの同期状態は破棄する(次回開いた時は必ずOFFから)
+    comparisonSyncEnabled = false;
+    comparisonSyncTime = 0;
+    comparisonSyncToggleBtn.textContent = "同期：OFF";
+    comparisonSyncToggleBtn.classList.remove("on");
+    comparisonSyncBar.style.display = "none";
+  }
+  comparisonCloseBtn.addEventListener("click", closeComparison);
+
+  compareStartBtn.addEventListener("click", () => {
+    if (compareSelection.length !== 2) return;
+    openComparison(compareSelection[0], compareSelection[1]);
+  });
+
+  // A/B共通のボタン操作は、data-ch/data-actによるイベント委譲で1箇所にまとめる
+  // (Aボタン用・Bボタン用のハンドラをそれぞれ書いて増殖させない)。
+  comparisonPanelsEl.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn) return;
+    const channel = btn.dataset.ch === "A" ? comparisonA : comparisonB;
+    if (!channel.playback) return;
+    const act = btn.dataset.act;
+
+    // STEP16: 同期ON中は、マーキング表示ON/OFF(24節: 常に独立)を除く操作をA/B共通で扱う。
+    if (comparisonSyncEnabled && act !== "markingToggle") {
+      handleSyncedComparisonAction(channel, act);
+      return;
+    }
+
+    switch (act) {
+      case "seekBack":
+        channel.playback.seekBy(-SEEK_STEP_SEC);
+        channel.playback.playbackTime = clampComparisonTime(channel, channel.playback.playbackTime);
+        updateComparisonPosition(channel);
+        break;
+      case "seekFwd":
+        channel.playback.seekBy(SEEK_STEP_SEC);
+        channel.playback.playbackTime = clampComparisonTime(channel, channel.playback.playbackTime);
+        updateComparisonPosition(channel);
+        break;
+      case "playPause":
+        if (channel.playback.getStateLabel() === "PAUSE") channel.playback.resume();
+        else channel.playback.pause();
+        break;
+      case "stepBack": {
+        const t = BufferEngine.getPreviousFrameTime(channel.frameBuffer, channel.playback.playbackTime);
+        if (t == null) break;
+        channel.playback.seekToTime(t);
+        channel.playback.playbackTime = clampComparisonTime(channel, channel.playback.playbackTime);
+        channel.playback.pause(); // 1F操作後は必ずPAUSE系で停止する(STEP8の仕様を維持)
+        updateComparisonPosition(channel);
+        break;
+      }
+      case "stepFwd": {
+        const t = BufferEngine.getNextFrameTime(channel.frameBuffer, channel.playback.playbackTime);
+        if (t == null || t > channel.durationMs) break;
+        channel.playback.seekToTime(t);
+        channel.playback.playbackTime = clampComparisonTime(channel, channel.playback.playbackTime);
+        channel.playback.pause(); // 1F操作後は必ずPAUSE系で停止する(STEP8の仕様を維持)
+        updateComparisonPosition(channel);
+        break;
+      }
+      case "slowCheck":
+        comparisonSlowCheck(channel);
+        break;
+      case "markingToggle":
+        setComparisonMarkingMode(channel, !channel.markingMode);
+        break;
+    }
+  });
+
+  /**
+   * STEP16: 同期ON中の操作(5〜7節)。sourceChannelは実際に押されたボタン側のチャンネルで、
+   * 1F操作の移動先を求める基準として使う(Aのframe.timeをBへ直接使い回すことはしない。
+   * 押された側自身のフレーム時刻を、A/B共通の同期時間として採用するだけ)。
+   */
+  function handleSyncedComparisonAction(sourceChannel, act) {
+    switch (act) {
+      case "seekBack":
+        setComparisonTime(comparisonSyncTime - SEEK_STEP_SEC * 1000, false);
+        break;
+      case "seekFwd":
+        setComparisonTime(comparisonSyncTime + SEEK_STEP_SEC * 1000, false);
+        break;
+      case "stepBack": {
+        const t = BufferEngine.getPreviousFrameTime(sourceChannel.frameBuffer, sourceChannel.playback.playbackTime);
+        if (t == null) return;
+        setComparisonTime(t, true); // 1F操作後は必ずPAUSE系で停止する(STEP8の仕様を維持、A/B両方に適用)
+        break;
+      }
+      case "stepFwd": {
+        const t = BufferEngine.getNextFrameTime(sourceChannel.frameBuffer, sourceChannel.playback.playbackTime);
+        if (t == null || t > sourceChannel.durationMs) return;
+        setComparisonTime(t, true);
+        break;
+      }
+      case "playPause": {
+        const shouldResume = sourceChannel.playback.getStateLabel() === "PAUSE";
+        [comparisonA, comparisonB].forEach((ch) => {
+          if (!ch.playback) return;
+          if (shouldResume) ch.playback.resume();
+          else ch.playback.pause();
+          ch.playPauseBtn.textContent = ch.playback.getStateLabel() === "PAUSE" ? "再生" : "一時停止";
+        });
+        break;
+      }
+      case "slowCheck":
+        comparisonSyncSlowCheck();
+        break;
+    }
+  }
 
   async function openShotReview(shot) {
     shotReviewTitle.textContent = formatShotDate(shot.createdAt) + "（" + (shot.durationMs / 1000).toFixed(1) + "秒）";
