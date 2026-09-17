@@ -182,15 +182,51 @@
   }
   #settingsToggle.on { color: var(--text); border-color: var(--text-dim); }
   .hint-note { font-size: 10px; color: var(--text-dim); margin: 8px 0 0; line-height: 1.6; }
+  /* STEP18②: 保存失敗時、原因診断のため複数行のテキストをそのまま折り返し表示する */
+  #saveStatus { white-space: pre-line; }
 
-  /* ---- 設定パネル(遅延時間・カメラ切替等)は既定で折りたたむ ---- */
+  /* ---- STEP18 ③④: 設定パネル(遅延時間・カメラ切替等) ----
+     旧実装: 通常のドキュメントフロー内に配置し、開くとfooterが伸びて
+     #stage(flex:1)が押し縮められていた(=カメラ映像が見えなくなる原因)。
+     新実装: position:fixedの「下からせり上がるボトムシート」にすることで、
+     開閉に関わらず#stage/footerの高さ・レイアウトに一切影響を与えない
+     (=映像は常にフルサイズで見えたまま設定操作ができる)。
+     max-heightのmin(70vh, ...)は、70vhをそのまま絶対視しているわけではなく
+     「画面の70%」と「画面上部にカメラ映像を最低限残すための高さ」のうち
+     小さい方を採用するための式。iPadの縦/横、Safariのアドレスバー表示状態、
+     セーフエリアの違いはdvh/calc()がレイアウト時に自動で反映するため、
+     JS側での再計算は行わない(シンプルさと安定性を優先)。
+     内容が入りきらない場合は必ずoverflow-y:autoでパネル内部がスクロールし、
+     映像側やページ全体がスクロールすることはない。
+     ドラッグでの開閉(Tier2)は今回追加しない。開閉はTier1として
+     transformによるスライドアニメーションのみを行う(#settingsToggleの
+     既存のクリックハンドラ・.open トグルはそのまま流用、JS変更なし)。 */
   #secondaryControls {
-    display: none;
-    margin-top: 8px;
-    padding-top: 8px;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    margin: 0;
+    padding: 14px 16px max(14px, env(safe-area-inset-bottom));
+    background: rgba(20,19,14,0.96);
     border-top: 1px solid var(--line);
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -8px 24px rgba(0,0,0,0.45);
+    /* 170pxは「ヘッダー分＋映像を最低限視認できる高さ」の目安の予約分。
+       70vhという上限だけに頼らず、常にどちらか小さい方が使われる。 */
+    max-height: min(70vh, calc(100dvh - 170px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    transform: translateY(100%);
+    transition: transform 0.25s ease;
+    pointer-events: none;
   }
-  #secondaryControls.open { display: block; }
+  #secondaryControls.open {
+    transform: translateY(0);
+    pointer-events: auto;
+  }
 
   #fullscreenToggle {
     font-size: 11px; padding: 4px 9px; border-radius: 6px;
@@ -283,11 +319,13 @@
     text-align: center;
   }
 
+  /* STEP18①: 見つけやすい位置(設定パネルの外・常時表示の操作列側)へ移動したため、
+     footer直下に馴染むスタイルに調整。挙動(disabled切替・件数表示)はJS側無変更。 */
   #compareStartBtn {
-    margin-top: 8px; width: 100%; padding: 8px; font-size: 12px;
+    margin-top: 6px; width: 100%; padding: 9px; font-size: 12px; font-weight: 600;
     border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-dim);
   }
-  #compareStartBtn:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+  #compareStartBtn:not(:disabled) { color: var(--accent); border-color: var(--accent); background: rgba(178,64,44,0.08); }
   #compareStartBtn:disabled { opacity: 0.5; }
 
   /* ---- STEP15: 保存済み射 x 保存済み射 「2画面比較」 ---- */
@@ -516,6 +554,13 @@
       <button class="act-go-live secondary-action wide">現在へ</button>
     </div>
 
+    <!-- STEP18①: 「比較する」ボタンは設定パネル(#secondaryControls)の外、
+         常時表示の主要操作列の直下へ移動。設定を開かなくても見つけやすく、
+         押しやすい位置にするための変更(id・JSロジックは無変更)。
+         比較対象を選ぶチェックボックス自体は従来通り、設定パネル内の
+         保存した射一覧に残す(選択操作そのものは変更しない)。 -->
+    <button id="compareStartBtn" disabled>比較する（0/2）</button>
+
     <div id="secondaryControls">
       <div class="label">遅延時間</div>
       <div class="row" id="delayPresets"></div>
@@ -551,7 +596,6 @@
 
       <div class="label" style="margin-top:14px">保存した射</div>
       <div id="shotList" class="hint-note">まだ保存された射はありません。</div>
-      <button id="compareStartBtn" disabled>比較する（0/2）</button>
 
       <p class="hint-note">「現在へ」は設定した遅延時間を維持したまま、通常の遅延再生位置に戻ります（リアルタイム映像ではありません）。</p>
       <p id="privacyNote">映像は端末内でのみ処理され、外部には送信・保存されません。</p>
@@ -1283,12 +1327,41 @@
   // Storage Engineへ委譲するだけ。frameBufferの配列そのものを渡すが、
   // Storage Engine側はそれを読み取るだけで、Buffer Engineの内部管理には触れない。
   let isSaving = false;
+
+  // STEP18②: 「保存射を複数保存できない」問題の原因を実機で特定するための診断のみ。
+  // 原因(容量不足なのか、他の要因なのか)を決め打ちせず、実際に何が起きたかを
+  // そのまま画面に出す。StorageEngine.saveShot()自体のロジックには一切手を加えない。
+  async function formatStorageEstimateText() {
+    if (!navigator.storage || !navigator.storage.estimate) {
+      return "ストレージ使用量: 取得不可(この環境はnavigator.storage.estimate()非対応)";
+    }
+    try {
+      const { usage, quota } = await navigator.storage.estimate();
+      const mb = (n) => ((n || 0) / 1048576).toFixed(1) + "MB";
+      const pct = quota ? (((usage || 0) / quota) * 100).toFixed(1) + "%" : "-";
+      return "ストレージ使用量: " + mb(usage) + " / " + mb(quota) + "（" + pct + "）";
+    } catch (e) {
+      return "ストレージ使用量: 取得失敗(" + (e && e.message ? e.message : e) + ")";
+    }
+  }
+
   saveShotBtn.addEventListener("click", async () => {
     if (isSaving) return;
     isSaving = true;
     saveShotBtn.disabled = true;
     saveStatus.style.display = "block";
     saveStatus.textContent = "保存中…";
+
+    // 診断用: 保存を試みる前の状態を記録しておく(失敗時のみ併記して表示する)
+    let shotCountBefore = null;
+    try {
+      shotCountBefore = (await StorageEngine.listShots()).length;
+    } catch (e) {
+      shotCountBefore = null; // 一覧取得自体に失敗しても保存本体の実行は妨げない
+    }
+    const estimateBefore = await formatStorageEstimateText();
+
+    let failed = false;
     try {
       const meta = await StorageEngine.saveShot(frameBuffer, {
         playbackTime: playback.playbackTime,
@@ -1307,14 +1380,25 @@
         saveStatus.textContent = "保存できるフレームがありませんでした。";
       }
     } catch (err) {
-      console.error(err);
-      saveStatus.textContent = "保存に失敗しました。";
+      failed = true;
+      console.error("[STEP18②診断] 射の保存に失敗:", err);
+      const estimateAfter = await formatStorageEstimateText();
+      // 原因を決め打ちせず、実際に起きたエラー内容と前後の状態をそのまま並べるだけ。
+      saveStatus.textContent = [
+        "保存に失敗しました。",
+        "エラー種別: " + (err && err.name ? err.name : "(不明)"),
+        "詳細: " + (err && err.message ? err.message : "(メッセージ無し)"),
+        "保存試行時点の保存済み件数: " + (shotCountBefore == null ? "取得失敗" : shotCountBefore + "件"),
+        "試行前 " + estimateBefore,
+        "試行後 " + estimateAfter,
+      ].join("\n");
     } finally {
       isSaving = false;
       saveShotBtn.disabled = false;
+      // STEP18②: 失敗時は実機でメモを取る時間が必要なため、成功時より長く表示したままにする。
       setTimeout(() => {
         saveStatus.style.display = "none";
-      }, 3000);
+      }, failed ? 20000 : 3000);
     }
   });
 
