@@ -319,8 +319,9 @@
     text-align: center;
   }
 
-  /* STEP18①: 見つけやすい位置(設定パネルの外・常時表示の操作列側)へ移動したため、
-     footer直下に馴染むスタイルに調整。挙動(disabled切替・件数表示)はJS側無変更。 */
+  /* STEP18①で調整したスタイル(値はそのまま維持)。ボタンの配置は、STEP18の比較導線修正により
+     設定パネル(#secondaryControls)内の保存射一覧の直下へ戻している。
+     挙動(disabled切替・件数表示)はJS側無変更。 */
   #compareStartBtn {
     margin-top: 6px; width: 100%; padding: 9px; font-size: 12px; font-weight: 600;
     border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-dim);
@@ -554,13 +555,6 @@
       <button class="act-go-live secondary-action wide">現在へ</button>
     </div>
 
-    <!-- STEP18①: 「比較する」ボタンは設定パネル(#secondaryControls)の外、
-         常時表示の主要操作列の直下へ移動。設定を開かなくても見つけやすく、
-         押しやすい位置にするための変更(id・JSロジックは無変更)。
-         比較対象を選ぶチェックボックス自体は従来通り、設定パネル内の
-         保存した射一覧に残す(選択操作そのものは変更しない)。 -->
-    <button id="compareStartBtn" disabled>比較する（0/2）</button>
-
     <div id="secondaryControls">
       <div class="label">遅延時間</div>
       <div class="row" id="delayPresets"></div>
@@ -596,6 +590,10 @@
 
       <div class="label" style="margin-top:14px">保存した射</div>
       <div id="shotList" class="hint-note">まだ保存された射はありません。</div>
+      <!-- STEP18(比較導線修正): 比較対象を選ぶ保存射一覧の直下(設定パネル内)に配置する。
+           STEP18①でfooter側へ移したところ、STEP18③④の固定ボトムシートに隠れて
+           押せなくなったため、STEP17と同じ位置へ戻した(id・JSロジックは無変更)。 -->
+      <button id="compareStartBtn" disabled>比較する（0/2）</button>
 
       <p class="hint-note">「現在へ」は設定した遅延時間を維持したまま、通常の遅延再生位置に戻ります（リアルタイム映像ではありません）。</p>
       <p id="privacyNote">映像は端末内でのみ処理され、外部には送信・保存されません。</p>
