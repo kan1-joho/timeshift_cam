@@ -554,13 +554,6 @@
       <button class="act-go-live secondary-action wide">現在へ</button>
     </div>
 
-    <!-- STEP18①: 「比較する」ボタンは設定パネル(#secondaryControls)の外、
-         常時表示の主要操作列の直下へ移動。設定を開かなくても見つけやすく、
-         押しやすい位置にするための変更(id・JSロジックは無変更)。
-         比較対象を選ぶチェックボックス自体は従来通り、設定パネル内の
-         保存した射一覧に残す(選択操作そのものは変更しない)。 -->
-    <button id="compareStartBtn" disabled>比較する（0/2）</button>
-
     <div id="secondaryControls">
       <div class="label">遅延時間</div>
       <div class="row" id="delayPresets"></div>
@@ -596,6 +589,9 @@
 
       <div class="label" style="margin-top:14px">保存した射</div>
       <div id="shotList" class="hint-note">まだ保存された射はありません。</div>
+      <!-- STEP18: 設定パネル(#secondaryControls)を開いた状態でも比較ボタンが
+           隠れずに見えるよう、#shotListの直後(パネル内)へ移設(id・JSロジックは無変更)。 -->
+      <button id="compareStartBtn" disabled>比較する（0/2）</button>
 
       <p class="hint-note">「現在へ」は設定した遅延時間を維持したまま、通常の遅延再生位置に戻ります（リアルタイム映像ではありません）。</p>
       <p id="privacyNote">映像は端末内でのみ処理され、外部には送信・保存されません。</p>
