@@ -319,8 +319,9 @@
     text-align: center;
   }
 
-  /* STEP18①: 見つけやすい位置(設定パネルの外・常時表示の操作列側)へ移動したため、
-     footer直下に馴染むスタイルに調整。挙動(disabled切替・件数表示)はJS側無変更。 */
+  /* STEP18①で調整したスタイル(値はそのまま維持)。ボタンの配置は、STEP18の比較導線修正により
+     設定パネル(#secondaryControls)内の保存射一覧の直下へ戻している。
+     挙動(disabled切替・件数表示)はJS側無変更。 */
   #compareStartBtn {
     margin-top: 6px; width: 100%; padding: 9px; font-size: 12px; font-weight: 600;
     border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-dim);
@@ -589,8 +590,9 @@
 
       <div class="label" style="margin-top:14px">保存した射</div>
       <div id="shotList" class="hint-note">まだ保存された射はありません。</div>
-      <!-- STEP18: 設定パネル(#secondaryControls)を開いた状態でも比較ボタンが
-           隠れずに見えるよう、#shotListの直後(パネル内)へ移設(id・JSロジックは無変更)。 -->
+      <!-- STEP18(比較導線修正): 比較対象を選ぶ保存射一覧の直下(設定パネル内)に配置する。
+           STEP18①でfooter側へ移したところ、STEP18③④の固定ボトムシートに隠れて
+           押せなくなったため、STEP17と同じ位置へ戻した(id・JSロジックは無変更)。 -->
       <button id="compareStartBtn" disabled>比較する（0/2）</button>
 
       <p class="hint-note">「現在へ」は設定した遅延時間を維持したまま、通常の遅延再生位置に戻ります（リアルタイム映像ではありません）。</p>
@@ -1990,47 +1992,92 @@
     });
   }
 
-  /** 指定チャンネルへ射を読み込む(A/Bどちらにも同じ関数を使う。ロジックの二重実装を避ける)。 */
+  /**
+   * 指定チャンネルへ射を読み込む(A/Bどちらにも同じ関数を使う。ロジックの二重実装を避ける)。
+   *
+   * STEP19: iPad Safari実機で「Attempted to assign to readonly property.」が発生し、
+   * A/B映像が黒画面・0.0/0.0秒のまま止まる不具合の原因調査のため、失敗した処理段階を
+   * err.comparisonStep / err.comparisonLabel に記録できるようにする(診断目的のみの追加。
+   * 比較ロジックの設計自体は変更しない)。
+   *
+   * 【原因判明・修正】setComparisonMarkingMode(channel, on) は2引数で定義されているが、
+   * ここでは setComparisonMarkingMode(false) と1引数で呼んでいたため、関数内部で
+   * channel(=false) . markingMode = on(=undefined) というプリミティブ値へのプロパティ代入が
+   * 発生していた。"use strict"下でこれは例外になり、Safari(JavaScriptCore)では
+   * 「Attempted to assign to readonly property.」というメッセージになる。
+   * StorageEngine.loadShotFrames()やcreateImageBitmap()自体の問題ではなかった。
+   * 呼び出しを setComparisonMarkingMode(channel, false) に修正する。
+   */
   async function loadShotIntoChannel(channel, shot) {
-    channel.shotId = shot.id;
-    channel.titleEl.textContent =
-      channel.label + "：" + formatShotDate(shot.createdAt) + "（" + (shot.durationMs / 1000).toFixed(1) + "秒）";
-    // StorageEngine.loadShotFrames()の戻り値をそのまま保持する(不要な複製はしない)
-    channel.frameBuffer = await StorageEngine.loadShotFrames(shot.id);
-    if (!channel.frameBuffer.length) {
-      throw new Error("フレームが空です: " + shot.id);
-    }
-    channel.durationMs = channel.frameBuffer[channel.frameBuffer.length - 1].time;
-    channel.canvas.width = channel.frameBuffer[0].bitmap.width;
-    channel.canvas.height = channel.frameBuffer[0].bitmap.height;
-    channel.markOverlay.width = channel.canvas.width;
-    channel.markOverlay.height = channel.canvas.height;
-
+    let step = "start";
+    console.log("[comparison] start", channel.label, shot.id);
     try {
-      channel.markings = await StorageEngine.loadShotMarkings(shot.id);
+      step = "loadShotFrames";
+      channel.shotId = shot.id;
+      channel.titleEl.textContent =
+        channel.label + "：" + formatShotDate(shot.createdAt) + "（" + (shot.durationMs / 1000).toFixed(1) + "秒）";
+      // StorageEngine.loadShotFrames()の戻り値をそのまま保持する(不要な複製はしない)
+      channel.frameBuffer = await StorageEngine.loadShotFrames(shot.id);
+      console.log("[comparison] frames loaded", channel.label, channel.frameBuffer.length);
+
+      step = "frameCheck";
+      if (!channel.frameBuffer.length) {
+        throw new Error("フレームが空です: " + shot.id);
+      }
+
+      step = "canvasSize";
+      channel.durationMs = channel.frameBuffer[channel.frameBuffer.length - 1].time;
+      channel.canvas.width = channel.frameBuffer[0].bitmap.width;
+      channel.canvas.height = channel.frameBuffer[0].bitmap.height;
+      channel.markOverlay.width = channel.canvas.width;
+      channel.markOverlay.height = channel.canvas.height;
+
+      step = "loadShotMarkings";
+      try {
+        channel.markings = await StorageEngine.loadShotMarkings(shot.id);
+      } catch (mErr) {
+        console.error("マーキングの読み込みに失敗しました:", mErr);
+        channel.markings = [];
+      }
+
+      step = "markingMode";
+      setComparisonMarkingMode(channel, false); // STEP19修正: (channel, on) の2引数で呼ぶ
+
+      step = "presets";
+      // 比較専用の初期値から開始する(ライブ/単一レビューの現在値は引き継がない)
+      channel.slowRate = DEFAULT_SLOW_RATE;
+      channel.slowWindowSec = DEFAULT_SLOW_WINDOW_SEC;
+      renderComparisonRatePresets(channel);
+      renderComparisonWindowPresets(channel);
+
+      step = "playbackInit";
+      // STEP12で発生した「delaySeconds:1e9」問題を再発させないため、単一レビューと同じ
+      // reviewNow()方式(実時刻に依存しない擬似時計＋明示クランプ)をチャンネルごとに使う。
+      channel.clockBase = null;
+      channel.playback = new PlaybackEngine.PlaybackEngine({ delaySeconds: REVIEW_DELAY_SECONDS });
+      channel.playback.update(comparisonNow(channel, performance.now()), 0);
+      channel.playback.seekToTime(0);
+      channel.playback.playbackTime = clampComparisonTime(channel, channel.playback.playbackTime);
+      channel.playback.pause();
+      channel.playPauseBtn.textContent = "再生";
+      updateComparisonPosition(channel);
+      redrawComparisonMarkings(channel);
+      console.log("[comparison] ready", channel.label);
     } catch (err) {
-      console.error("マーキングの読み込みに失敗しました:", err);
-      channel.markings = [];
+      console.error("[comparison] load failed", {
+        label: channel.label,
+        shotId: shot.id,
+        step: step,
+        name: err && err.name,
+        message: err && err.message,
+        stack: err && err.stack,
+      });
+      if (err && typeof err === "object") {
+        err.comparisonStep = step;
+        err.comparisonLabel = channel.label;
+      }
+      throw err;
     }
-    setComparisonMarkingMode(false);
-
-    // 比較専用の初期値から開始する(ライブ/単一レビューの現在値は引き継がない)
-    channel.slowRate = DEFAULT_SLOW_RATE;
-    channel.slowWindowSec = DEFAULT_SLOW_WINDOW_SEC;
-    renderComparisonRatePresets(channel);
-    renderComparisonWindowPresets(channel);
-
-    // STEP12で発生した「delaySeconds:1e9」問題を再発させないため、単一レビューと同じ
-    // reviewNow()方式(実時刻に依存しない擬似時計＋明示クランプ)をチャンネルごとに使う。
-    channel.clockBase = null;
-    channel.playback = new PlaybackEngine.PlaybackEngine({ delaySeconds: REVIEW_DELAY_SECONDS });
-    channel.playback.update(comparisonNow(channel, performance.now()), 0);
-    channel.playback.seekToTime(0);
-    channel.playback.playbackTime = clampComparisonTime(channel, channel.playback.playbackTime);
-    channel.playback.pause();
-    channel.playPauseBtn.textContent = "再生";
-    updateComparisonPosition(channel);
-    redrawComparisonMarkings(channel);
   }
 
   /** チャンネルの状態を解放する(閉じる時、または読み込み失敗時のロールバック用)。 */
@@ -2113,17 +2160,24 @@
     setComparisonSync(false); // 16節: 開くたびに必ず同期OFFから開始する
     try {
       // 35節: 両方の読み込みが完了してから表示する(中途半端な状態で見せない)
+      // STEP19: Promise.allの並列構成自体は変更しない(診断結果次第で別途検討する)。
       await Promise.all([loadShotIntoChannel(comparisonA, shotA), loadShotIntoChannel(comparisonB, shotB)]);
     } catch (err) {
-      console.error(err);
+      // STEP19診断: どちらのチャンネル(A/B)のどの段階で失敗したかを併せて記録する。
+      console.error("[comparison] load failed (openComparison)", {
+        label: err && err.comparisonLabel,
+        step: err && err.comparisonStep,
+        name: err && err.name,
+        message: err && err.message,
+        stack: err && err.stack,
+      });
       releaseComparisonChannel(comparisonA);
       releaseComparisonChannel(comparisonB);
-      // STEP18: 原因切り分けのため、比較画面(comparisonOverlay)自体は閉じずに残し、
-      // その内側のcomparisonErrorへ具体的なエラー内容を表示する。
-      // (以前は先にcomparisonOverlayをdisplay:noneへ戻していたため、その子要素である
-      // comparisonErrorを表示しても親ごと非表示になり、実機で何も見えなかった)
-      const detail = (err && err.message) ? err.message : String(err);
-      showComparisonError("比較対象の読み込みに失敗しました： " + detail);
+      comparisonOverlay.style.display = "none";
+      showComparisonError(
+        "比較対象の読み込みに失敗しました" +
+          (err && err.comparisonLabel ? "（" + err.comparisonLabel + " / " + (err.comparisonStep || "?") + "）" : "")
+      );
       return;
     }
     if (comparisonRafId) cancelAnimationFrame(comparisonRafId);
