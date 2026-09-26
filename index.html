@@ -312,6 +312,9 @@
   .shot-item-actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
   .shot-item-actions button { padding: 6px 10px; font-size: 11px; }
   .shot-delete { color: var(--accent); border-color: var(--accent-dim); }
+  /* STEP20-2: 動画保存ボタン。既存の再生/削除ボタンと同じ見た目のトーンに揃える(大幅なUI変更をしない)。 */
+  .shot-export { color: var(--ok); border-color: var(--ok); }
+  .shot-export:disabled { opacity: 0.4; }
   .shot-compare-check { width: 18px; height: 18px; accent-color: var(--accent); }
   .shot-compare-slot {
     display: inline-block; min-width: 14px;
@@ -590,6 +593,9 @@
 
       <div class="label" style="margin-top:14px">保存した射</div>
       <div id="shotList" class="hint-note">まだ保存された射はありません。</div>
+      <!-- STEP20-2: 動画保存(1件ずつ)の処理中/結果表示。saveStatusとは別の独立した表示領域にする
+           (射の保存処理自体のUIには一切触れない)。 -->
+      <p id="exportStatus" class="hint-note" style="display:none"></p>
       <!-- STEP18(比較導線修正): 比較対象を選ぶ保存射一覧の直下(設定パネル内)に配置する。
            STEP18①でfooter側へ移したところ、STEP18③④の固定ボトムシートに隠れて
            押せなくなったため、STEP17と同じ位置へ戻した(id・JSロジックは無変更)。 -->
@@ -1482,6 +1488,12 @@
         const playBtn = document.createElement("button");
         playBtn.textContent = "再生";
         playBtn.addEventListener("click", () => openShotReview(shot));
+        // STEP20-2: 保存済み射をMP4動画化して写真アプリへ共有するためのボタン。
+        // 既存の再生/削除ボタンの構成・挙動には一切手を加えない(追加のみ)。
+        const exportBtn = document.createElement("button");
+        exportBtn.textContent = "動画保存";
+        exportBtn.className = "shot-export";
+        exportBtn.addEventListener("click", () => exportShotAsVideo(shot));
         const delBtn = document.createElement("button");
         delBtn.textContent = "削除";
         delBtn.className = "shot-delete";
@@ -1500,6 +1512,7 @@
         actions.appendChild(compareCheck);
         actions.appendChild(compareSlotLabel);
         actions.appendChild(playBtn);
+        actions.appendChild(exportBtn);
         actions.appendChild(delBtn);
         item.appendChild(info);
         item.appendChild(actions);
@@ -1507,6 +1520,239 @@
       });
     updateCompareStartButton();
     refreshCompareSlotLabels();
+  }
+
+  // =================================================================
+  // STEP20-2: 保存済み射をMP4動画化し、iPad共有シート経由で写真アプリへ保存する
+  //
+  // STEP20-1(verify_video_export.html)で実機確認できたパイプラインをそのまま踏襲する:
+  //   shotFrames読み込み → 専用exportCanvasへ時間順に描画
+  //   → exportCanvas.captureStream(24) → MediaRecorder(MP4優先/WebMフォールバック)
+  //   → Blob → navigator.share()
+  //
+  // 依存関係について:
+  //   ・StorageEngine.loadShotFrames()を「読むだけ」で使う(StorageEngine自体は無変更)。
+  //   ・専用のexportCanvas/exportCtxをその場で生成し、displayCanvas/shotReviewCanvas/
+  //     comparisonCanvasA/B等の既存Canvasには一切触れない(表示中の再生・比較・マーキングに影響しない)。
+  //   ・BufferEngine.findFrameAt()は「読むだけ」で使う(BufferEngine自体は無変更)。
+  //   ・音声トラックは追加しない(Canvas映像のみ)。マーキングは焼き込まない(元映像のみ)。
+  //   ・60秒固定化やWebCodecs、MP4変換ライブラリの導入はしない(STEP20-1と同じ制約を維持)。
+  // =================================================================
+  const exportStatusEl = document.getElementById("exportStatus");
+  let isExportingVideo = false; // 同時に複数のエクスポートを走らせない(Canvas/Recorderを1系統に限定するため)
+
+  // STEP20-1のverify_video_export.htmlと同じ優先順位。MP4系を優先し、非対応ならWebMへ自動フォールバックする。
+  const EXPORT_MIME_CANDIDATES = [
+    'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+    "video/mp4;codecs=h264",
+    "video/mp4",
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ];
+  function pickExportMimeType() {
+    if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return "";
+    for (const c of EXPORT_MIME_CANDIDATES) {
+      if (MediaRecorder.isTypeSupported(c)) return c;
+    }
+    return "";
+  }
+
+  // 写真アプリ上で何の動画か分かるファイル名。既存のshot.createdAt(保存日時)を使うだけで、
+  // StorageEngineのデータ構造は変更しない。
+  function formatShotFilenameDate(ms) {
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, "0");
+    return (
+      d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
+      "_" + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds())
+    );
+  }
+
+  function setExportStatus(text) {
+    exportStatusEl.textContent = text;
+    exportStatusEl.style.display = text ? "block" : "none";
+  }
+  function setAllExportButtonsDisabled(disabled) {
+    document.querySelectorAll(".shot-export").forEach((b) => (b.disabled = disabled));
+  }
+
+  // frames({time,bitmap}配列)のImageBitmapを解放する。closeShotReview()等、既存コードと同じ考え方
+  // (このエクスポート専用に読み込んだフレームであり、レビュー画面等とは共有していない)。
+  function releaseExportFrames(frames) {
+    for (const f of frames) {
+      try { f.bitmap.close(); } catch (e) {}
+    }
+  }
+
+  /**
+   * 保存済み射1件を動画化し、共有シート経由で写真アプリへ保存する。
+   * @param {Object} shot StorageEngine.listShots()が返すメタデータ({id, createdAt, durationMs, ...})
+   */
+  async function exportShotAsVideo(shot) {
+    if (isExportingVideo) return; // 二重起動防止(Canvas/Recorderを1系統に限定)
+    if (!window.MediaRecorder || typeof HTMLCanvasElement.prototype.captureStream !== "function") {
+      setExportStatus("動画の作成を開始できませんでした（このブラウザは動画書き出しに対応していません）。");
+      return;
+    }
+
+    isExportingVideo = true;
+    setAllExportButtonsDisabled(true);
+    setExportStatus("動画を作成しています…");
+
+    // STEP20-2では既存の表示用Canvas(displayCanvas/shotReviewCanvas/comparisonCanvasA/B)を
+    // 一切使わない。録画専用のexportCanvasをその場で生成し、終了後は参照を手放すだけでよい
+    // (DOMにも追加しない＝画面には表示されない、既存レイアウトへの影響ゼロ)。
+    let frames = null;
+    let exportCanvas = null;
+    let stream = null;
+    let recorder = null;
+
+    try {
+      frames = await StorageEngine.loadShotFrames(shot.id);
+    } catch (err) {
+      console.error("[STEP20-2] shotFramesの読み込みに失敗:", err);
+      setExportStatus("動画の作成を開始できませんでした。");
+      isExportingVideo = false;
+      setAllExportButtonsDisabled(false);
+      return;
+    }
+    if (!frames.length) {
+      setExportStatus("動画の作成を開始できませんでした（フレームがありません）。");
+      isExportingVideo = false;
+      setAllExportButtonsDisabled(false);
+      return;
+    }
+
+    // Canvasサイズは保存フレームのBitmapに合わせる(縦横比を維持。16:9等への固定は行わない)。
+    exportCanvas = document.createElement("canvas");
+    exportCanvas.width = frames[0].bitmap.width;
+    exportCanvas.height = frames[0].bitmap.height;
+    const exportCtx = exportCanvas.getContext("2d", { alpha: false });
+
+    try {
+      stream = exportCanvas.captureStream(24); // 本体のCAPTURE_INTERVAL_MS(24fps相当)に合わせる
+    } catch (err) {
+      console.error("[STEP20-2] captureStream()に失敗:", err);
+      setExportStatus("動画の作成を開始できませんでした。");
+      releaseExportFrames(frames);
+      isExportingVideo = false;
+      setAllExportButtonsDisabled(false);
+      return;
+    }
+
+    const mimeType = pickExportMimeType();
+    try {
+      recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    } catch (err) {
+      console.error("[STEP20-2] MediaRecorderの生成に失敗:", err);
+      setExportStatus("動画の作成を開始できませんでした。");
+      releaseExportFrames(frames);
+      isExportingVideo = false;
+      setAllExportButtonsDisabled(false);
+      return;
+    }
+
+    const chunks = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+    recorder.onerror = (e) => {
+      console.error("[STEP20-2] MediaRecorderエラー:", e.error || e);
+    };
+
+    const durationMs = frames[frames.length - 1].time;
+    // 保存されているフレームのtimeを基準に描画する(setInterval等で適当な間隔にはしない)。
+    // 複雑なリアルタイム同期は作らず、実時間の経過(now - startTs)に対応する実フレームを
+    // BufferEngine.findFrameAt()でそのつど取得して描画するだけの最小構成。
+    let rafId = null;
+    let startTs = null;
+    function drawExportFrame(now) {
+      if (startTs === null) startTs = now;
+      const elapsed = now - startTs;
+      const clamped = Math.min(elapsed, durationMs);
+      const frame = BufferEngine.findFrameAt(frames, clamped);
+      if (frame) {
+        exportCtx.drawImage(frame.bitmap, 0, 0, exportCanvas.width, exportCanvas.height);
+      }
+      if (elapsed >= durationMs) {
+        if (recorder.state === "recording") recorder.stop();
+        return; // ここでrequestAnimationFrameを再度呼ばない(=描画ループ終了)
+      }
+      rafId = requestAnimationFrame(drawExportFrame);
+    }
+
+    const stopped = new Promise((resolve) => {
+      recorder.onstop = () => resolve();
+    });
+
+    try {
+      recorder.start();
+    } catch (err) {
+      console.error("[STEP20-2] MediaRecorder.start()に失敗:", err);
+      setExportStatus("動画の作成を開始できませんでした。");
+      releaseExportFrames(frames);
+      isExportingVideo = false;
+      setAllExportButtonsDisabled(false);
+      return;
+    }
+    rafId = requestAnimationFrame(drawExportFrame);
+
+    await stopped;
+    if (rafId) cancelAnimationFrame(rafId);
+    releaseExportFrames(frames);
+
+    if (!chunks.length) {
+      console.error("[STEP20-2] 録画データが空でした(チャンクが1件も来なかった)。");
+      setExportStatus("動画の作成に失敗しました。");
+      isExportingVideo = false;
+      setAllExportButtonsDisabled(false);
+      return;
+    }
+
+    const blobType = recorder.mimeType || mimeType || "video/webm";
+    const blob = new Blob(chunks, { type: blobType });
+    const ext = blobType.indexOf("mp4") !== -1 ? "mp4" : "webm";
+    const filename = "射_" + formatShotFilenameDate(shot.createdAt) + "." + ext;
+    console.log("[STEP20-2] 動画Blob生成完了:", blob.type, blob.size, "bytes");
+
+    setExportStatus("動画を作成しました。共有シートを開いています…");
+    await shareExportedVideo(blob, filename);
+
+    isExportingVideo = false;
+    setAllExportButtonsDisabled(false);
+  }
+
+  /** 生成したBlobをnavigator.share()経由で共有する(STEP20-1と同じ方式)。 */
+  async function shareExportedVideo(blob, filename) {
+    if (!navigator.share) {
+      setExportStatus("動画は作成されましたが、共有機能が利用できません（このブラウザは共有非対応です）。");
+      return;
+    }
+    let file;
+    try {
+      file = new File([blob], filename, { type: blob.type });
+    } catch (err) {
+      console.error("[STEP20-2] File生成に失敗:", err);
+      setExportStatus("動画は作成されましたが、共有機能が利用できません。");
+      return;
+    }
+    if (navigator.canShare && !navigator.canShare({ files: [file] })) {
+      setExportStatus("動画は作成されましたが、共有機能が利用できません（この形式の共有に非対応です）。");
+      return;
+    }
+    try {
+      await navigator.share({ files: [file], title: filename });
+      setExportStatus("共有シートでの操作が完了しました。写真アプリへの保存状況をご確認ください。");
+    } catch (err) {
+      if (err && err.name === "AbortError") {
+        // D: ユーザーによるキャンセルはエラー扱いにしない
+        setExportStatus("共有をキャンセルしました。");
+      } else {
+        console.error("[STEP20-2] 共有に失敗:", err);
+        setExportStatus("共有に失敗しました。");
+      }
+    }
   }
 
   // ---- 保存済み射の再生 ----
