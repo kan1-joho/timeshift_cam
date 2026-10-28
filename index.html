@@ -497,6 +497,9 @@
   #markingToolbar { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
   .mark-tool { flex: 1; font-size: 12px; padding: 9px 4px; }
   .mark-tool.selected { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+  /* STEP26-B: ズームスライダー */
+  .zoom-slider { flex: 1; min-width: 120px; accent-color: var(--accent); }
+  #cameraNotice:empty { display: none; }
   #markClearAll.confirming { background: var(--accent); border-color: var(--accent); color: #fff; }
 </style>
 </head>
@@ -581,6 +584,28 @@
       <div class="row">
         <button id="mirrorToggle" class="wide">左右反転</button>
         <button id="rotateView" class="wide">映像回転</button>
+      </div>
+
+      <!-- STEP26-B: 端末が報告する機能だけを実行時に表示する(既定は非表示。検出できなければ出ない) -->
+      <div id="cameraFeatureBlock" style="display:none">
+        <div id="cameraSelectBlock" style="display:none">
+          <div class="label" style="margin-top:14px">カメラ選択（この端末が報告するカメラ）</div>
+          <div class="row" id="cameraDeviceRow"></div>
+          <p class="hint-note">表示名は端末が報告した名前です。名前だけでは画角の違いは分かりません。</p>
+        </div>
+        <p id="cameraNotice" class="hint-note"></p>
+        <div id="zoomBlock" style="display:none">
+          <div class="label" style="margin-top:14px" id="zoomLabel">ズーム</div>
+          <div class="row">
+            <button id="zoomMinus" class="adjust">−</button>
+            <input type="range" id="zoomSlider" class="zoom-slider" min="0" max="1" step="0.01" value="0">
+            <button id="zoomPlus" class="adjust">＋</button>
+          </div>
+          <p id="zoomStatus" class="hint-note"></p>
+          <div class="row">
+            <button id="zoomReset" class="wide">起動時のズームに戻す</button>
+          </div>
+        </div>
       </div>
 
       <div class="label" style="margin-top:14px">スロー速度</div>
@@ -876,6 +901,179 @@
       "秒までしか保存できません。「最新へ戻る」を押すと、より長く保存できます。";
   }
   // STEP23-END
+
+  // ---- STEP26-B: 端末非依存・機能適応型のカメラ機能検出(純粋ロジック。DOM/カメラ実体に依存しない) ----
+  // Nodeテスト(test_step26b.js)がBEGIN/ENDの間をそのまま取り出して検証する。
+  // 方針: カメラ台数・deviceId・ラベルと種別の対応・ズームの範囲/刻みは一切固定しない。
+  // すべて実行時に取得した値だけを根拠にする。API不在・例外・空の結果は「その機能なし」という正常分岐。
+  // STEP26B-BEGIN
+  function normalizeZoomCapability(caps) {
+    if (!caps || typeof caps !== "object") return null;
+    const z = caps.zoom;
+    if (!z || typeof z !== "object") return null;
+    if (!Number.isFinite(z.min) || !Number.isFinite(z.max) || !(z.min < z.max)) return null;
+    return { min: z.min, max: z.max, step: Number.isFinite(z.step) && z.step > 0 ? z.step : null };
+  }
+  // スライダーの刻み。端末がstepを返さない場合のみ、取得した範囲の1/100を使う(範囲から導出した値)。
+  function zoomSliderStep(cap) {
+    return cap.step || (cap.max - cap.min) / 100;
+  }
+  // +/-ボタン1回分。端末のstepが極端に細かくても押して分かる大きさになるよう、範囲の1/20を下限にする。
+  function zoomButtonStep(cap) {
+    return Math.max(cap.step || 0, (cap.max - cap.min) / 20);
+  }
+  // 実値が要求値と「一致した」とみなす許容幅(stepの半分、または範囲の0.5%の大きい方)
+  function zoomTolerance(cap) {
+    return Math.max((cap.step || 0) / 2, (cap.max - cap.min) * 0.005);
+  }
+  function normalizeVideoInputs(devices) {
+    if (!Array.isArray(devices)) return [];
+    return devices
+      .filter((d) => d && d.kind === "videoinput")
+      .map((d) => ({
+        deviceId: typeof d.deviceId === "string" ? d.deviceId : "",
+        label: typeof d.label === "string" ? d.label : "",
+      }));
+  }
+  // deviceIdが取得できているものだけを、重複を除いて選択肢にする
+  function selectableVideoInputs(inputs) {
+    const seen = new Set();
+    const out = [];
+    for (const d of inputs) {
+      if (!d.deviceId || seen.has(d.deviceId)) continue;
+      seen.add(d.deviceId);
+      out.push(d);
+    }
+    return out;
+  }
+  // 表示名は端末が報告したlabelをそのまま使う。無ければ連番。ラベルから種別(広角等)は推定しない。
+  function describeCameraOption(dev, index) {
+    return dev && dev.label ? dev.label : "カメラ " + (index + 1);
+  }
+  function readTrackSettings(track) {
+    try {
+      if (track && typeof track.getSettings === "function") return track.getSettings() || null;
+    } catch (e) {}
+    return null;
+  }
+  function readZoomSetting(track) {
+    const s = readTrackSettings(track);
+    return s && Number.isFinite(s.zoom) ? s.zoom : null;
+  }
+  function readTrackCapabilities(track) {
+    try {
+      if (track && typeof track.getCapabilities === "function") return track.getCapabilities() || null;
+    } catch (e) {}
+    return null;
+  }
+  // 機能検出。例外は外へ出さず、取得できなかった項目は空/nullで返す。
+  async function detectCameraFeatures(env) {
+    env = env || {};
+    const md = env.mediaDevices || null;
+    const track = env.track || null;
+    const notes = [];
+
+    let supported = null;
+    if (md && typeof md.getSupportedConstraints === "function") {
+      try { supported = md.getSupportedConstraints() || null; } catch (e) { notes.push("getSupportedConstraints失敗"); }
+    } else {
+      notes.push("getSupportedConstraints非対応");
+    }
+
+    let caps = null;
+    if (track && typeof track.getCapabilities === "function") {
+      try { caps = track.getCapabilities() || null; } catch (e) { notes.push("getCapabilities失敗"); }
+    } else {
+      notes.push("getCapabilities非対応");
+    }
+    const settings = readTrackSettings(track);
+    if (!settings) notes.push("getSettings取得不可");
+
+    let inputs = [];
+    if (md && typeof md.enumerateDevices === "function") {
+      try { inputs = normalizeVideoInputs(await md.enumerateDevices()); } catch (e) { notes.push("enumerateDevices失敗"); }
+    } else {
+      notes.push("enumerateDevices非対応");
+    }
+
+    // ズームの根拠はトラックのcapabilitiesのみ。getSupportedConstraints()がzoomを明示的に
+    // 非対応(false)と返す場合だけは、矛盾する情報として無効側に倒す(キー自体が無い場合は影響させない)。
+    let zoom = normalizeZoomCapability(caps);
+    if (zoom && supported && supported.zoom === false) {
+      zoom = null;
+      notes.push("getSupportedConstraintsがzoom非対応を返したため無効");
+    }
+    if (!zoom) notes.push("ズーム能力なし");
+
+    const selectable = selectableVideoInputs(inputs);
+    return {
+      zoom: zoom,
+      videoInputs: inputs,
+      selectableInputs: selectable,
+      canSelectDevice: selectable.length >= 2,
+      currentDeviceId: settings && typeof settings.deviceId === "string" ? settings.deviceId : "",
+      initialZoom: Number.isFinite(settings && settings.zoom) ? settings.zoom : null,
+      notes: notes,
+    };
+  }
+  // ズーム適用。要求値は取得済みの能力範囲にだけクランプする。適用後は必ずgetSettings()で実値を再確認する。
+  async function applyZoom(track, requested, cap) {
+    if (!track || typeof track.applyConstraints !== "function" || !cap || !Number.isFinite(requested)) {
+      return { ok: false, reason: "unsupported", requested: requested, actual: readZoomSetting(track) };
+    }
+    const target = Math.min(cap.max, Math.max(cap.min, requested));
+    let error = null;
+    try {
+      await track.applyConstraints({ advanced: [{ zoom: target }] });
+    } catch (e) {
+      error = e;
+    }
+    const actual = readZoomSetting(track);
+    if (error) {
+      return { ok: false, reason: "rejected", requested: target, actual: actual, message: error && error.message };
+    }
+    if (actual == null) return { ok: true, reason: "unreadable", requested: target, actual: null };
+    const matched = Math.abs(actual - target) <= zoomTolerance(cap);
+    return { ok: true, reason: matched ? "matched" : "adjusted", requested: target, actual: actual };
+  }
+  // 「起動時のズームに戻す」。記録済みの起動時実測値が、現在のトラックの能力範囲内にある場合のみ復元する。
+  // 無効な場合は失敗理由を返すだけで、1.0などの値を勝手に指定しない。
+  async function restoreInitialZoom(track, initialZoom) {
+    if (!Number.isFinite(initialZoom)) return { ok: false, reason: "no-initial", requested: null, actual: readZoomSetting(track) };
+    const cap = normalizeZoomCapability(readTrackCapabilities(track));
+    if (!cap) return { ok: false, reason: "no-capability", requested: initialZoom, actual: readZoomSetting(track) };
+    if (initialZoom < cap.min - 1e-9 || initialZoom > cap.max + 1e-9) {
+      return { ok: false, reason: "out-of-range", requested: initialZoom, actual: readZoomSetting(track) };
+    }
+    return applyZoom(track, initialZoom, cap);
+  }
+  function formatZoomValue(v) {
+    return Number(v).toFixed(2);
+  }
+  function formatZoomStatus(r) {
+    if (!r) return "";
+    const cur = r.actual == null ? "取得できません" : formatZoomValue(r.actual);
+    if (!r.ok) {
+      return "ズームを変更できませんでした（現在の値: " + cur + "）";
+    }
+    if (r.actual == null) return "ズーム: 現在の値を取得できません（端末が値を返しませんでした）";
+    if (r.reason === "adjusted") {
+      return "ズーム: 指定 " + formatZoomValue(r.requested) + " → 実際 " + formatZoomValue(r.actual) + "（端末が調整しました）";
+    }
+    return "ズーム: " + formatZoomValue(r.actual) + "（端末が報告する現在の値）";
+  }
+  function formatZoomRestoreFailure(reason) {
+    if (reason === "no-initial") return "起動時のズーム値を取得できていないため、戻せません。";
+    if (reason === "no-capability") return "このカメラのズーム範囲を取得できないため、戻せません。";
+    if (reason === "out-of-range") return "起動時のズーム値が現在のカメラの範囲外のため、戻せません。";
+    return "起動時のズームへ戻せませんでした。";
+  }
+  // deviceId指定での切替が失敗したとき、元のトラックがまだ生きていれば維持(keep)、
+  // そうでなければ既存のカメラ取得処理で復旧(restart)する。
+  function decideCameraSwitchRecovery(oldTrackReadyState) {
+    return oldTrackReadyState === "live" ? "keep" : "restart";
+  }
+  // STEP26B-END
 
   // ---- 状態 ----
   let delaySeconds = Number(localStorage.getItem("delaySeconds")) || DEFAULT_DELAY;
@@ -1552,6 +1750,7 @@
     isSaving = true;
     saveShotBtn.disabled = true;
     flipBtn.disabled = true; // STEP21-B: 保存中はカメラ切替(バッファ全破棄を伴う)を無効化する
+    updateCameraControlsEnabled(); // STEP26-B: 保存中はズーム変更・カメラ選択も無効化する
     saveStatus.style.display = "block";
     saveStatus.textContent = "保存中…";
 
@@ -1626,6 +1825,7 @@
       isSaving = false;
       saveShotBtn.disabled = false;
       flipBtn.disabled = false;
+      updateCameraControlsEnabled(); // STEP26-B: 保存終了後、ズーム・カメラ選択の有効/無効を状態に合わせて戻す
       // 保存中に保留していた回転を、保存完了後にここで反映する
       if (orientationDeferredBySave) {
         orientationDeferredBySave = false;
@@ -3148,8 +3348,194 @@
   });
   shotSlowCheckBtn.addEventListener("click", reviewSlowCheck);
 
+
+  // =================================================================
+  // STEP26-B: ズーム・カメラ選択のUI(端末が報告する機能だけを表示する)
+  // 検出結果が無い/空の場合、ブロック全体を非表示にするだけで、撮影・既存の前面/背面切替には影響しない。
+  // ズーム値・選択したカメラはlocalStorageへ保存しない(起動のたびに端末の実測値から始める)。
+  // =================================================================
+  // STEP26B-UI-BEGIN
+  const cameraFeatureBlock = document.getElementById("cameraFeatureBlock");
+  const cameraSelectBlock = document.getElementById("cameraSelectBlock");
+  const cameraDeviceRow = document.getElementById("cameraDeviceRow");
+  const cameraNoticeEl = document.getElementById("cameraNotice");
+  const zoomBlock = document.getElementById("zoomBlock");
+  const zoomLabelEl = document.getElementById("zoomLabel");
+  const zoomSlider = document.getElementById("zoomSlider");
+  const zoomMinusBtn = document.getElementById("zoomMinus");
+  const zoomPlusBtn = document.getElementById("zoomPlus");
+  const zoomStatusEl = document.getElementById("zoomStatus");
+  const zoomResetBtn = document.getElementById("zoomReset");
+  let cameraFeatures = null;      // detectCameraFeatures()の結果。トラックが変わるたびに作り直す
+  let cameraFeaturesTrack = null; // cameraFeaturesを取得したトラック(古いトラックの値を使い続けないための照合用)
+  let initialZoomValue = null;    // カメラ取得直後に実測したズーム値(「起動時のズームに戻す」用)
+  let zoomBusy = false;
+  let cameraSwitching = false;
+
+  function currentVideoTrack() {
+    return stream && stream.getVideoTracks ? stream.getVideoTracks()[0] || null : null;
+  }
+
+  function resetCameraFeatures() {
+    cameraFeatures = null;
+    cameraFeaturesTrack = null;
+    initialZoomValue = null;
+    cameraNoticeEl.textContent = "";
+    renderCameraControls();
+  }
+
+  async function refreshCameraFeatures() {
+    const track = currentVideoTrack();
+    let f = null;
+    try {
+      f = await detectCameraFeatures({ mediaDevices: navigator.mediaDevices, track: track });
+    } catch (e) {
+      console.warn("[STEP26-B] 機能検出に失敗(機能なしとして続行):", e);
+      f = null;
+    }
+    // 検出中にカメラが切り替わっていた場合、古いトラックの結果は捨てる
+    if (!track || track !== currentVideoTrack()) return;
+    cameraFeatures = f;
+    cameraFeaturesTrack = track;
+    initialZoomValue = f && f.zoom ? f.initialZoom : null;
+    renderCameraControls();
+  }
+
+  function updateCameraControlsEnabled() {
+    // 保存中・カメラ切替中は、カメラ切替とズーム変更の両方を無効化する(保存対象に画角変化が混入しないため)
+    const busy = isSaving || cameraSwitching;
+    flipBtn.disabled = busy;
+    zoomSlider.disabled = busy;
+    zoomMinusBtn.disabled = busy;
+    zoomPlusBtn.disabled = busy;
+    zoomResetBtn.disabled = busy || initialZoomValue == null;
+    cameraDeviceRow.querySelectorAll("button").forEach((b) => (b.disabled = busy));
+  }
+
+  function renderCameraControls() {
+    const f = cameraFeatures;
+    const hasZoom = !!(f && f.zoom);
+    const hasSelect = !!(f && f.canSelectDevice);
+    cameraFeatureBlock.style.display = hasZoom || hasSelect ? "block" : "none";
+    zoomBlock.style.display = hasZoom ? "block" : "none";
+    cameraSelectBlock.style.display = hasSelect ? "block" : "none";
+
+    if (hasZoom) {
+      const cap = f.zoom;
+      zoomLabelEl.textContent =
+        "ズーム（この端末が報告する範囲 " + formatZoomValue(cap.min) + "〜" + formatZoomValue(cap.max) + "）";
+      zoomSlider.min = String(cap.min);
+      zoomSlider.max = String(cap.max);
+      zoomSlider.step = String(zoomSliderStep(cap));
+      const cur = readZoomSetting(cameraFeaturesTrack);
+      if (cur != null) zoomSlider.value = String(cur);
+      zoomStatusEl.textContent = formatZoomStatus({ ok: true, reason: "matched", actual: cur });
+    }
+
+    cameraDeviceRow.innerHTML = "";
+    if (hasSelect) {
+      f.selectableInputs.forEach((dev, i) => {
+        const b = document.createElement("button");
+        b.textContent = describeCameraOption(dev, i);
+        b.className = dev.deviceId === f.currentDeviceId ? "selected" : "";
+        b.addEventListener("click", () => switchToDevice(dev.deviceId));
+        cameraDeviceRow.appendChild(b);
+      });
+    }
+    updateCameraControlsEnabled();
+  }
+
+  async function requestZoom(value) {
+    if (isSaving || cameraSwitching) {
+      zoomStatusEl.textContent = "保存中・カメラ切替中はズームを変更できません。";
+      return;
+    }
+    if (zoomBusy || !cameraFeatures || !cameraFeatures.zoom || !cameraFeaturesTrack) return;
+    const track = cameraFeaturesTrack;
+    zoomBusy = true;
+    let r = null;
+    try {
+      r = await applyZoom(track, value, cameraFeatures.zoom);
+    } finally {
+      zoomBusy = false;
+    }
+    if (track !== currentVideoTrack()) return; // 適用中にカメラが変わった場合、画面は新しいトラック側の描画に任せる
+    zoomStatusEl.textContent = formatZoomStatus(r);
+    if (r && Number.isFinite(r.actual)) zoomSlider.value = String(r.actual);
+  }
+  zoomSlider.addEventListener("input", () => {
+    zoomStatusEl.textContent = "ズーム: 指定 " + formatZoomValue(Number(zoomSlider.value)) + "（指を離すと適用）";
+  });
+  zoomSlider.addEventListener("change", () => requestZoom(Number(zoomSlider.value)));
+  function stepZoom(direction) {
+    if (!cameraFeatures || !cameraFeatures.zoom) return;
+    const base = readZoomSetting(cameraFeaturesTrack);
+    const from = base != null ? base : Number(zoomSlider.value);
+    requestZoom(from + direction * zoomButtonStep(cameraFeatures.zoom));
+  }
+  zoomMinusBtn.addEventListener("click", () => stepZoom(-1));
+  zoomPlusBtn.addEventListener("click", () => stepZoom(1));
+  zoomResetBtn.addEventListener("click", async () => {
+    if (isSaving || cameraSwitching || zoomBusy) return;
+    const track = cameraFeaturesTrack;
+    if (!track || track !== currentVideoTrack()) return;
+    zoomBusy = true;
+    let r = null;
+    try {
+      r = await restoreInitialZoom(track, initialZoomValue);
+    } finally {
+      zoomBusy = false;
+    }
+    if (track !== currentVideoTrack()) return;
+    zoomStatusEl.textContent = r.ok ? formatZoomStatus(r) : formatZoomRestoreFailure(r.reason);
+    if (r && Number.isFinite(r.actual)) zoomSlider.value = String(r.actual);
+  });
+
+  // deviceId指定でのカメラ切替。先に新しいstreamだけを取得し、成功した場合のみ既存のstartCamera()へ渡して
+  // 入れ替える。取得に失敗した場合は、元のトラックが生きていれば何もせず維持し、
+  // 生きていなければ既存のカメラ取得処理(前面/背面指定)で復旧する。
+  async function switchToDevice(deviceId) {
+    if (isSaving || cameraSwitching || !deviceId) return;
+    if (cameraFeatures && deviceId === cameraFeatures.currentDeviceId) return;
+    cameraSwitching = true;
+    updateCameraControlsEnabled();
+    cameraNoticeEl.textContent = "カメラを切り替えています…";
+    try {
+      let probe = null;
+      try {
+        probe = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            deviceId: { exact: deviceId },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30 },
+          },
+        });
+      } catch (e) {
+        console.warn("[STEP26-B] deviceId指定の取得に失敗:", e);
+      }
+      if (probe) {
+        await startCamera({ preAcquiredStream: probe });
+        cameraNoticeEl.textContent = "";
+        return;
+      }
+      const oldTrack = currentVideoTrack();
+      if (decideCameraSwitchRecovery(oldTrack ? oldTrack.readyState : null) === "keep") {
+        cameraNoticeEl.textContent = "選択したカメラに切り替えられませんでした。元の映像をそのまま使っています。";
+      } else {
+        await startCamera();
+        cameraNoticeEl.textContent = "選択したカメラに切り替えられなかったため、通常のカメラで再開しました。";
+      }
+    } finally {
+      cameraSwitching = false;
+      updateCameraControlsEnabled();
+    }
+  }
+  // STEP26B-UI-END
+
   flipBtn.addEventListener("click", async () => {
-    if (isSaving) return; // STEP21-B: 保存中はカメラ切替をしない(念のためのガード。ボタン自体もdisabled)
+    if (isSaving || cameraSwitching) return; // STEP21-B: 保存中はカメラ切替をしない(念のためのガード。ボタン自体もdisabled)
     facingMode = facingMode === "environment" ? "user" : "environment";
     localStorage.setItem("facingMode", facingMode);
     await startCamera();
@@ -3184,7 +3570,11 @@
   }
 
   // ---- カメラ起動 ----
-  async function startCamera() {
+  // STEP26-B: opts.preAcquiredStream が渡された場合は、deviceId指定で先に取得済みのstreamを使う
+  // (取得処理以外のバッファ破棄・向き補正・再開の流れは通常のカメラ起動と同一)。
+  async function startCamera(opts) {
+    opts = opts || {};
+    resetCameraFeatures(); // 旧トラックの能力・設定は使い続けない(新しいトラックから再取得する)
     setMessage("カメラへのアクセスを準備しています…");
     setStatus("接続中…", false);
     showDiag();
@@ -3216,15 +3606,19 @@
     }, 8000);
 
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          facingMode: { ideal: facingMode },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 },
-        },
-      });
+      if (opts.preAcquiredStream) {
+        stream = opts.preAcquiredStream;
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: facingMode },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30 },
+          },
+        });
+      }
     } catch (err) {
       clearTimeout(watchdog);
       console.error(err);
@@ -3255,6 +3649,8 @@
     setMessage("");
     setStatus("LIVE（遅延中）", true);
     running = true;
+    // STEP26-B: 新しいトラックから機能(ズーム・複数カメラ)を再検出する。失敗しても撮影には影響させない。
+    refreshCameraFeatures().catch((e) => console.warn("[STEP26-B]", e));
   }
 
   // ---- 映像の向き補正 ----
