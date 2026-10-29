@@ -499,7 +499,34 @@
   .mark-tool.selected { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
   /* STEP26-B: ズームスライダー */
   .zoom-slider { flex: 1; min-width: 120px; accent-color: var(--accent); }
-  #cameraNotice:empty { display: none; }
+  /* STEP26-C: 画角パネル。映像下端に重ねる薄い半透明バー(1〜2行)。映像の重要部分を隠さないよう高さを抑える。 */
+  #angleToggle {
+    font-size: 11px; padding: 4px 9px; border-radius: 6px;
+    background: transparent; border: 1px solid var(--line); color: var(--text-dim);
+  }
+  #angleToggle.on { color: var(--accent); border-color: var(--accent); }
+  #cameraFeatureBlock {
+    position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 30;
+    padding: 6px 8px;
+    background: rgba(21,20,15,0.72);
+    border: 1px solid var(--line); border-radius: 10px;
+  }
+  #cameraFeatureBlock .angle-row { display: flex; align-items: center; gap: 6px; }
+  #zoomBlock { margin-top: 6px; }
+  #cameraFeatureBlock button { padding: 6px 10px; font-size: 12px; }
+  #cameraFeatureBlock button.adjust { min-width: 40px; }
+  #cameraSelectBlock { min-width: 0; max-width: 60%; }
+  #cameraSelectBlock .row { margin: 0; padding: 0; }
+  .angle-status {
+    flex: 1; min-width: 0; font-size: 11px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .angle-label { font-size: 10px; color: var(--text-dim); white-space: nowrap; }
+  .angle-notice { margin: 4px 0 0; font-size: 10px; color: var(--warn); line-height: 1.4; }
+  .angle-notice:empty { display: none; }
+  /* 全画面中は画角操作を提供しない(画角の調整は全画面にする前に行う) */
+  #stage:fullscreen #cameraFeatureBlock, #stage:-webkit-full-screen #cameraFeatureBlock,
+  #app.pseudo-fullscreen #cameraFeatureBlock { display: none !important; }
   #markClearAll.confirming { background: var(--accent); border-color: var(--accent); color: #fff; }
 </style>
 </head>
@@ -510,6 +537,7 @@
     <div id="headerRight">
       <span id="status">起動中…</span>
       <button id="markingToggle">マーキング</button>
+      <button id="angleToggle" style="display:none">画角</button>
       <button id="settingsToggle">設定</button>
       <button id="fullscreenToggle">全画面</button>
       <button id="debugToggle">デバッグ</button>
@@ -530,6 +558,29 @@
     <div id="stageMessage">
       <p id="stageMessageText">カメラへのアクセスを準備しています…</p>
       <div id="diagLine"></div>
+    </div>
+
+    <!-- STEP26-C: 画角パネル(ズーム・カメラ選択)。設定パネルでは映像が隠れて画角を確認できないため、
+         映像の下端に重ねる1〜2行の細い半透明バーにした。既定は非表示で、端末がズーム/複数カメラを
+         報告した場合だけヘッダーの「画角」ボタンから開ける。全画面中は表示しない。 -->
+    <div id="cameraFeatureBlock" style="display:none">
+      <div class="angle-row">
+        <div id="cameraSelectBlock" style="display:none">
+          <div class="row" id="cameraDeviceRow" title="表示名は端末が報告した名前です。名前だけでは画角の違いは分かりません。"></div>
+        </div>
+        <span id="zoomStatus" class="angle-status"></span>
+        <button id="angleClose">閉じる</button>
+      </div>
+      <p id="cameraNotice" class="angle-notice"></p>
+      <div id="zoomBlock" style="display:none">
+        <div class="angle-row">
+          <span id="zoomLabel" class="angle-label">ズーム</span>
+          <button id="zoomMinus" class="adjust">−</button>
+          <input type="range" id="zoomSlider" class="zoom-slider" min="0" max="1" step="0.01" value="0">
+          <button id="zoomPlus" class="adjust">＋</button>
+          <button id="zoomReset">起動時のズームに戻す</button>
+        </div>
+      </div>
     </div>
 
     <!-- 全画面時のみ表示される最小限のオーバーレイ操作パネル -->
@@ -584,28 +635,6 @@
       <div class="row">
         <button id="mirrorToggle" class="wide">左右反転</button>
         <button id="rotateView" class="wide">映像回転</button>
-      </div>
-
-      <!-- STEP26-B: 端末が報告する機能だけを実行時に表示する(既定は非表示。検出できなければ出ない) -->
-      <div id="cameraFeatureBlock" style="display:none">
-        <div id="cameraSelectBlock" style="display:none">
-          <div class="label" style="margin-top:14px">カメラ選択（この端末が報告するカメラ）</div>
-          <div class="row" id="cameraDeviceRow"></div>
-          <p class="hint-note">表示名は端末が報告した名前です。名前だけでは画角の違いは分かりません。</p>
-        </div>
-        <p id="cameraNotice" class="hint-note"></p>
-        <div id="zoomBlock" style="display:none">
-          <div class="label" style="margin-top:14px" id="zoomLabel">ズーム</div>
-          <div class="row">
-            <button id="zoomMinus" class="adjust">−</button>
-            <input type="range" id="zoomSlider" class="zoom-slider" min="0" max="1" step="0.01" value="0">
-            <button id="zoomPlus" class="adjust">＋</button>
-          </div>
-          <p id="zoomStatus" class="hint-note"></p>
-          <div class="row">
-            <button id="zoomReset" class="wide">起動時のズームに戻す</button>
-          </div>
-        </div>
       </div>
 
       <div class="label" style="margin-top:14px">スロー速度</div>
@@ -1334,6 +1363,7 @@
   settingsToggleBtn.addEventListener("click", () => {
     const open = secondaryControls.classList.toggle("open");
     settingsToggleBtn.classList.toggle("on", open);
+    if (open) closeAnglePanel(); // STEP26-C: 設定パネルと画角パネルは同時に開かない
   });
 
   // ---- 一定時間操作がなければUIを薄くする(操作UIをタップすると再表示) ----
@@ -1346,6 +1376,7 @@
     appEl.classList.remove("ui-dim");
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
+      if (angleOpen) return; // STEP26-C: 画角パネルを開いている間は、操作が最初のタップで無効化されないよう薄くしない
       appEl.classList.add("ui-dim");
     }, UI_IDLE_MS);
   }
@@ -3356,6 +3387,8 @@
   // =================================================================
   // STEP26B-UI-BEGIN
   const cameraFeatureBlock = document.getElementById("cameraFeatureBlock");
+  const angleToggleBtn = document.getElementById("angleToggle");
+  const angleCloseBtn = document.getElementById("angleClose");
   const cameraSelectBlock = document.getElementById("cameraSelectBlock");
   const cameraDeviceRow = document.getElementById("cameraDeviceRow");
   const cameraNoticeEl = document.getElementById("cameraNotice");
@@ -3371,6 +3404,8 @@
   let initialZoomValue = null;    // カメラ取得直後に実測したズーム値(「起動時のズームに戻す」用)
   let zoomBusy = false;
   let cameraSwitching = false;
+  // STEP26-C: 画角パネルの開閉状態(ズーム/カメラ選択の検出ロジックとは独立。表示の出し入れだけを管理する)
+  let angleOpen = false;
 
   function currentVideoTrack() {
     return stream && stream.getVideoTracks ? stream.getVideoTracks()[0] || null : null;
@@ -3398,8 +3433,24 @@
     cameraFeatures = f;
     cameraFeaturesTrack = track;
     initialZoomValue = f && f.zoom ? f.initialZoom : null;
+    // STEP26-C: 検出の結果、ズームも複数カメラも無いトラックなら、開いていた画角パネルは閉じた状態に戻す
+    if (!(f && (f.zoom || f.canSelectDevice))) angleOpen = false;
     renderCameraControls();
   }
+
+  function openAnglePanel() {
+    // 設定パネルは閉じて、映像が見える状態で調整できるようにする
+    secondaryControls.classList.remove("open");
+    settingsToggleBtn.classList.remove("on");
+    angleOpen = true;
+    renderCameraControls();
+  }
+  function closeAnglePanel() {
+    angleOpen = false;
+    renderCameraControls();
+  }
+  angleToggleBtn.addEventListener("click", () => (angleOpen ? closeAnglePanel() : openAnglePanel()));
+  angleCloseBtn.addEventListener("click", closeAnglePanel);
 
   function updateCameraControlsEnabled() {
     // 保存中・カメラ切替中は、カメラ切替とズーム変更の両方を無効化する(保存対象に画角変化が混入しないため)
@@ -3416,14 +3467,18 @@
     const f = cameraFeatures;
     const hasZoom = !!(f && f.zoom);
     const hasSelect = !!(f && f.canSelectDevice);
-    cameraFeatureBlock.style.display = hasZoom || hasSelect ? "block" : "none";
+    // STEP26-C: 「画角」ボタンは機能が検出されたときだけ表示。パネルは開いていて、かつ機能がある間だけ表示する。
+    const hasAny = hasZoom || hasSelect;
+    angleToggleBtn.style.display = hasAny ? "" : "none";
+    angleToggleBtn.classList.toggle("on", angleOpen && hasAny);
+    cameraFeatureBlock.style.display = angleOpen && hasAny ? "block" : "none";
     zoomBlock.style.display = hasZoom ? "block" : "none";
     cameraSelectBlock.style.display = hasSelect ? "block" : "none";
 
     if (hasZoom) {
       const cap = f.zoom;
-      zoomLabelEl.textContent =
-        "ズーム（この端末が報告する範囲 " + formatZoomValue(cap.min) + "〜" + formatZoomValue(cap.max) + "）";
+      zoomLabelEl.textContent = "範囲 " + formatZoomValue(cap.min) + "〜" + formatZoomValue(cap.max);
+      zoomLabelEl.title = "この端末が報告するズーム範囲";
       zoomSlider.min = String(cap.min);
       zoomSlider.max = String(cap.max);
       zoomSlider.step = String(zoomSliderStep(cap));

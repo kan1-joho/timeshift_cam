@@ -321,6 +321,186 @@ check("4 Engine / manifest.json / sw.js はSTEP26-Bで変更していない(inde
   );
 });
 
+// =================================================================
+// STEP26-C: 画角パネル(設定パネルから分離した、映像を見ながら調整できる薄いバー)
+// =================================================================
+function makeEl(id) {
+  const cls = new Set();
+  return {
+    id: id, style: {}, dataset: {}, textContent: "", innerHTML: "", title: "", value: "", min: "", max: "", step: "", disabled: false,
+    listeners: {},
+    classList: {
+      add: (c) => cls.add(c), remove: (c) => cls.delete(c), contains: (c) => cls.has(c),
+      toggle: (c, force) => { const on = force === undefined ? !cls.has(c) : !!force; on ? cls.add(c) : cls.delete(c); return on; },
+    },
+    addEventListener(ev, fn) { this.listeners[ev] = fn; },
+    appendChild() {},
+    querySelectorAll() { return []; },
+  };
+}
+function makeUI(initial) {
+  const els = {};
+  const document = {
+    getElementById: (id) => els[id] || (els[id] = makeEl(id)),
+    createElement: () => makeEl("btn"),
+  };
+  const env = { stream: initial.stream || null, isSaving: !!initial.isSaving };
+  const factory = new Function(
+    "document", "navigator", "env",
+    pureSrc +
+      "\nlet stream = env.stream; let isSaving = env.isSaving;" +
+      "\nconst flipBtn = document.getElementById('flipCamera');" +
+      "\nconst secondaryControls = document.getElementById('secondaryControls');" +
+      "\nconst settingsToggleBtn = document.getElementById('settingsToggle');\n" +
+      uiSrc +
+      "\nreturn { openAnglePanel, closeAnglePanel, refreshCameraFeatures, resetCameraFeatures, renderCameraControls," +
+      " setStream(s) { stream = s; }, setSaving(v) { isSaving = v; updateCameraControlsEnabled(); }," +
+      " get angleOpen() { return angleOpen; } };"
+  );
+  const api = factory(document, initial.navigator || { mediaDevices: fakeMD() }, env);
+  api.els = els;
+  api.$ = (id) => document.getElementById(id);
+  return api;
+}
+function streamOf(track) { return { getVideoTracks: () => [track] }; }
+const ZOOM_CAPS = { zoom: { min: 1, max: 4, step: 0.1 } };
+
+check("C: 設定パネル(#secondaryControls)の中にズーム/カメラ選択の要素が残っていない", () => {
+  const a = html.indexOf('<div id="secondaryControls">');
+  const b = html.indexOf("</footer>");
+  const sheet = html.slice(a, b);
+  ["zoomSlider", "zoomMinus", "zoomPlus", "zoomReset", "cameraDeviceRow", "cameraFeatureBlock", "cameraNotice"].forEach((id) =>
+    assert.ok(!sheet.includes('id="' + id + '"'), id + " が設定パネル内に残っている")
+  );
+});
+check("C: 画角パネルは映像(#stage)の中に置かれ、必要な要素をすべて持つ", () => {
+  const a = html.indexOf('<div id="stage">');
+  const b = html.indexOf("<footer>");
+  const stageHtml = html.slice(a, b);
+  ["cameraFeatureBlock", "cameraDeviceRow", "zoomSlider", "zoomMinus", "zoomPlus", "zoomReset", "zoomStatus", "angleClose"].forEach((id) =>
+    assert.ok(stageHtml.includes('id="' + id + '"'), id + " が#stage内に無い")
+  );
+});
+check("C: パネルは「1〜2行」(.angle-rowが2つ以下)で、設定パネルのような大きな面を持たない", () => {
+  const a = html.indexOf('<div id="cameraFeatureBlock"');
+  const b = html.indexOf("<!-- 全画面時のみ表示される最小限のオーバーレイ操作パネル -->");
+  const panelHtml = html.slice(a, b);
+  const rows = (panelHtml.match(/class="angle-row"/g) || []).length;
+  assert.ok(rows >= 1 && rows <= 2, "行数=" + rows);
+  const css = html.match(/#cameraFeatureBlock \{[^}]*\}/)[0];
+  assert.ok(/position: absolute/.test(css) && /bottom: 8px/.test(css) && /rgba\(/.test(css), "下端の半透明バーになっていない");
+  assert.ok(!/max-height|height:/.test(css), "固定の高さ指定がある");
+});
+check("C: 「画角」ボタンは既定で非表示、ヘッダーにある", () => {
+  assert.ok(/<button id="angleToggle" style="display:none">画角<\/button>/.test(html));
+  const header = html.slice(html.indexOf("<header>"), html.indexOf("</header>"));
+  assert.ok(header.includes('id="angleToggle"'));
+});
+check("C: 全画面中は画角パネルを表示しない(CSS)", () => {
+  assert.ok(/#app\.pseudo-fullscreen #cameraFeatureBlock \{ display: none !important; \}/.test(html));
+  assert.ok(/#stage:fullscreen #cameraFeatureBlock/.test(html));
+});
+check("C(挙動): 機能が検出されると「画角」ボタンが出て、開くとパネルが表示され、設定パネルは閉じる", async () => {
+  const track = fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2, deviceId: "a" } });
+  const ui = makeUI({ stream: streamOf(track), navigator: { mediaDevices: fakeMD({ devices: [cam("a", "A")] }) } });
+  ui.$("secondaryControls").classList.add("open");
+  ui.$("settingsToggle").classList.add("on");
+  await ui.refreshCameraFeatures();
+  assert.strictEqual(ui.$("angleToggle").style.display, "", "機能ありなのに画角ボタンが出ない");
+  assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "none", "開く前にパネルが出ている");
+  ui.openAnglePanel();
+  assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "block");
+  assert.strictEqual(ui.$("secondaryControls").classList.contains("open"), false, "設定パネルが開いたまま(相互排他でない)");
+  assert.strictEqual(ui.$("settingsToggle").classList.contains("on"), false);
+  assert.strictEqual(ui.$("zoomBlock").style.display, "block");
+  assert.ok(/範囲 1\.00〜4\.00/.test(ui.$("zoomLabel").textContent));
+});
+check("C(挙動): 閉じるとパネルが完全に非表示になり、通常の撮影画面に戻る", async () => {
+  const track = fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } });
+  const ui = makeUI({ stream: streamOf(track) });
+  await ui.refreshCameraFeatures();
+  ui.openAnglePanel();
+  assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "block");
+  ui.$("angleClose").listeners.click();
+  assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "none");
+  assert.strictEqual(ui.angleOpen, false);
+  assert.strictEqual(ui.$("angleToggle").classList.contains("on"), false);
+  // 画角ボタンでも開閉できる
+  ui.$("angleToggle").listeners.click();
+  assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "block");
+  ui.$("angleToggle").listeners.click();
+  assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "none");
+});
+check("C(挙動): 設定パネルを開く側の処理(closeAnglePanel)で画角パネルが閉じる(相互排他の逆向き)", async () => {
+  const track = fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } });
+  const ui = makeUI({ stream: streamOf(track) });
+  await ui.refreshCameraFeatures();
+  ui.openAnglePanel();
+  ui.closeAnglePanel(); // index.htmlの設定ボタンハンドラが、開くときに呼ぶ関数
+  assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "none");
+  const handler = html.match(/settingsToggleBtn\.addEventListener\("click", \(\) => \{[\s\S]*?\n  \}\);/)[0];
+  assert.ok(/if \(open\) closeAnglePanel\(\);/.test(handler), "設定ボタンのハンドラが画角パネルを閉じていない");
+});
+check("C(挙動): ズーム・複数カメラとも無い端末では「画角」ボタンもパネルも出ない(開いていても閉じる)", async () => {
+  const ui = makeUI({ stream: streamOf(fakeTrack({ caps: {}, settings: {} })) });
+  await ui.refreshCameraFeatures();
+  assert.strictEqual(ui.$("angleToggle").style.display, "none");
+  assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "none");
+  // APIが一切ない端末
+  const ui2 = makeUI({ stream: streamOf(fakeTrack({ caps: "absent", settingsApi: "absent", apply: "absent" })), navigator: { mediaDevices: {} } });
+  await ui2.refreshCameraFeatures();
+  assert.strictEqual(ui2.$("angleToggle").style.display, "none");
+  // 開いた状態で、機能の無いトラックへ切り替わった場合は閉じた状態に戻る
+  const ui3 = makeUI({ stream: streamOf(fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } })) });
+  await ui3.refreshCameraFeatures();
+  ui3.openAnglePanel();
+  ui3.setStream(streamOf(fakeTrack({ caps: {}, settings: {} })));
+  await ui3.refreshCameraFeatures();
+  assert.strictEqual(ui3.angleOpen, false);
+  assert.strictEqual(ui3.$("cameraFeatureBlock").style.display, "none");
+});
+check("C(挙動): カメラのみ選択可能(ズーム無し)の場合も画角ボタンが出て、ズーム行は出ない", async () => {
+  const ui = makeUI({
+    stream: streamOf(fakeTrack({ caps: {}, settings: { deviceId: "a" } })),
+    navigator: { mediaDevices: fakeMD({ devices: [cam("a", "A"), cam("b", "B")] }) },
+  });
+  await ui.refreshCameraFeatures();
+  ui.openAnglePanel();
+  assert.strictEqual(ui.$("angleToggle").style.display, "");
+  assert.strictEqual(ui.$("cameraSelectBlock").style.display, "block");
+  assert.strictEqual(ui.$("zoomBlock").style.display, "none");
+});
+check("C: カメラ切替中の一時的なリセットでは、開いていたパネルの開閉状態を保持する(切替後に再表示される)", async () => {
+  const ui = makeUI({ stream: streamOf(fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } })) });
+  await ui.refreshCameraFeatures();
+  ui.openAnglePanel();
+  ui.resetCameraFeatures(); // startCamera()冒頭の処理
+  assert.strictEqual(ui.angleOpen, true);
+  assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "none"); // 検出前は出さない
+  await ui.refreshCameraFeatures();
+  assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "block");
+});
+check("C: 保存中の排他制御は維持(パネル内のズーム・カメラ選択・切替が無効)", async () => {
+  const ui = makeUI({ stream: streamOf(fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } })), isSaving: true });
+  await ui.refreshCameraFeatures();
+  ui.openAnglePanel();
+  ["zoomSlider", "zoomMinus", "zoomPlus", "zoomReset", "flipCamera"].forEach((id) =>
+    assert.strictEqual(ui.$(id).disabled, true, id + "が保存中に有効のまま")
+  );
+  ui.setSaving(false);
+  assert.strictEqual(ui.$("zoomSlider").disabled, false);
+  assert.strictEqual(ui.$("flipCamera").disabled, false);
+});
+check("C: 画角パネルを開いている間はUIを薄くしない(最初のタップが無効化されないため)", () => {
+  assert.ok(/if \(angleOpen\) return;[\s\S]{0,80}ui-dim/.test(html));
+});
+check("C: 検出・ズーム適用・切替・復旧の各ロジックはSTEP26-Bのまま(関数が全て存在)", () => {
+  ["detectCameraFeatures", "applyZoom", "restoreInitialZoom", "decideCameraSwitchRecovery"].forEach((f) =>
+    assert.ok(pureSrc.includes("function " + f), f)
+  );
+  ["requestZoom", "switchToDevice", "refreshCameraFeatures"].forEach((f) => assert.ok(uiSrc.includes("function " + f), f));
+});
+
 (async () => {
   for (const t of tests) {
     try {
