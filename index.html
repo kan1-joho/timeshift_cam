@@ -272,11 +272,22 @@
   #stage:fullscreen #fsControls,
   #stage:-webkit-full-screen #fsControls,
   #app.pseudo-fullscreen #fsControls {
-    display: flex; flex-direction: column; gap: 8px;
+    display: none; flex-direction: column; gap: 8px;
     position: absolute; left: 0; right: 0; bottom: 0;
     padding: 12px 16px max(12px, env(safe-area-inset-bottom));
     background: linear-gradient(to top, rgba(10,10,8,0.85), rgba(10,10,8,0) 100%);
   }
+  /* STEP26-D: 全画面は既定で「全画面終了」ボタンだけを表示する。映像を1回タップすると操作ボタン
+     (#fsControls)と遅延/スロー表示が出て、もう一度タップすると隠れる(#app.fs-controls-on で切り替え)。 */
+  #app.fs-controls-on #stage:fullscreen #fsControls,
+  #app.fs-controls-on #stage:-webkit-full-screen #fsControls,
+  #app.pseudo-fullscreen.fs-controls-on #fsControls { display: flex; }
+  #app:not(.fs-controls-on) #stage:fullscreen #delayBadge,
+  #app:not(.fs-controls-on) #stage:-webkit-full-screen #delayBadge,
+  #app:not(.fs-controls-on) #stage:fullscreen #slowIndicator,
+  #app:not(.fs-controls-on) #stage:-webkit-full-screen #slowIndicator,
+  #app.pseudo-fullscreen:not(.fs-controls-on) #delayBadge,
+  #app.pseudo-fullscreen:not(.fs-controls-on) #slowIndicator { display: none !important; }
   #fsExit {
     display: none;
     position: absolute; top: 14px; right: 14px;
@@ -1334,6 +1345,8 @@
     const isFs = isFullscreenActive();
     fullscreenToggleBtn.textContent = isFs ? "全画面終了" : "全画面";
     fullscreenToggleBtn.classList.toggle("on", isFs);
+    // STEP26-D: 全画面に入るとき/出るときは、操作ボタンは必ず隠した状態から始める
+    appEl.classList.remove("fs-controls-on");
   }
   function enterPseudoFullscreen() {
     appEl.classList.add("pseudo-fullscreen");
@@ -1359,6 +1372,17 @@
       enterPseudoFullscreen();
     });
   }
+  // STEP26-D: 全画面中、映像を1回タップすると操作ボタンの表示/非表示を切り替える。
+  // 操作ボタン自身・全画面終了ボタンのタップ、およびライブのマーキング中のタップでは切り替えない。
+  // STEP26D-BEGIN
+  function handleStageTapForFullscreenControls(e) {
+    if (!isFullscreenActive()) return;
+    if (e && e.target && e.target.closest && e.target.closest("#fsControls, #fsExit")) return;
+    if (markingMode !== "none") return;
+    appEl.classList.toggle("fs-controls-on");
+  }
+  // STEP26D-END
+  stageEl.addEventListener("click", handleStageTapForFullscreenControls);
   fullscreenToggleBtn.addEventListener("click", toggleFullscreen);
   fsExitBtn.addEventListener("click", toggleFullscreen);
   document.addEventListener("fullscreenchange", updateFullscreenButton);
@@ -1380,12 +1404,14 @@
     appEl.classList.remove("ui-dim");
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      if (angleOpen) return; // STEP26-C: 画角パネルを開いている間は、操作が最初のタップで無効化されないよう薄くしない
+      if (angleOpen || isFullscreenActive()) return; // STEP26-C: 画角パネルを開いている間は、操作が最初のタップで無効化されないよう薄くしない
       appEl.classList.add("ui-dim");
     }, UI_IDLE_MS);
   }
   function handlePointerDownForIdle() {
-    if (appEl.classList.contains("ui-dim")) {
+    // STEP26-D: 全画面中は薄くする機能を使わない(最初のタップがUI再表示だけで消費されると、
+    // 映像タップによる操作ボタンの表示/非表示を切り替えられなくなるため)
+    if (appEl.classList.contains("ui-dim") && !isFullscreenActive()) {
       suppressNextClick = true; // このあとに来るclickは再表示専用として無効化する
     }
     resetIdleTimer();

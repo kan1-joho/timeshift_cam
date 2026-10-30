@@ -493,7 +493,7 @@ check("C: 保存中の排他制御は維持(パネル内のズーム・カメラ
   assert.strictEqual(ui.$("flipCamera").disabled, false);
 });
 check("C: 画角パネルを開いている間はUIを薄くしない(最初のタップが無効化されないため)", () => {
-  assert.ok(/if \(angleOpen\) return;[\s\S]{0,80}ui-dim/.test(html));
+  assert.ok(/if \(angleOpen(?: \|\| isFullscreenActive\(\))?\) return;[\s\S]{0,160}ui-dim/.test(html));
 });
 check("C: 検出・ズーム適用・切替・復旧の各ロジックはSTEP26-Bのまま(関数が全て存在)", () => {
   ["detectCameraFeatures", "applyZoom", "restoreInitialZoom", "decideCameraSwitchRecovery"].forEach((f) =>
@@ -540,48 +540,81 @@ check("C2(静的): 隠す対象はfooter(5秒戻る/進む・スロー確認・�
   assert.ok(header.includes('id="angleToggle"'));
 });
 
+
 // =================================================================
-// STEP26-D: 案A(footer全体を退避)の正式採用。実装はSTEP26-C2のまま、不足していた観点だけ追加する。
+// STEP26-D: 全画面中は「全画面終了」だけを表示し、映像タップで操作ボタンを出し入れする
 // =================================================================
-check("D: 通常状態(画角パネルが閉じている)ではangle-adjustingが付いていない(footerは通常表示)", async () => {
-  const ui = makeUI({ stream: streamOf(fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } })) });
-  assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), false);
-  await ui.refreshCameraFeatures();
-  assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), false);
-  assert.strictEqual(ui.angleOpen, false);
+const tapSrc = extract("// STEP26D-BEGIN", "// STEP26D-END");
+function makeTapHarness(o) {
+  const cls = new Set();
+  const appEl = { classList: { toggle: (c) => (cls.has(c) ? (cls.delete(c), false) : (cls.add(c), true)), contains: (c) => cls.has(c) } };
+  const state = { fs: !!o.fs, markingMode: o.markingMode || "none" };
+  const fn = new Function("appEl", "state",
+    "const isFullscreenActive = () => state.fs; let markingMode = state.markingMode;\n" + tapSrc +
+    "; return { handle: handleStageTapForFullscreenControls, setMarking(m) { markingMode = m; } };");
+  const h = fn(appEl, state);
+  h.on = () => cls.has("fs-controls-on");
+  h.state = state;
+  h.cls = cls;
+  return h;
+}
+const tapEvent = (insideControls) => ({ target: { closest: (sel) => (insideControls ? {} : null) } });
+
+check("D(挙動): 全画面中、映像を1回タップで操作ボタンが出て、もう一度タップで隠れる", () => {
+  const h = makeTapHarness({ fs: true });
+  assert.strictEqual(h.on(), false);
+  h.handle(tapEvent(false));
+  assert.strictEqual(h.on(), true);
+  h.handle(tapEvent(false));
+  assert.strictEqual(h.on(), false);
 });
-check("D: 開閉を繰り返しても、angle-adjustingと画角パネルの表示が常に一致する", async () => {
-  const ui = makeUI({ stream: streamOf(fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } })) });
-  await ui.refreshCameraFeatures();
-  for (let i = 0; i < 5; i++) {
-    ui.openAnglePanel();
-    assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), true);
-    assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "block");
-    ui.closeAnglePanel();
-    assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), false);
-    assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "none");
-  }
+check("D(挙動): 全画面でないときの映像タップは何もしない", () => {
+  const h = makeTapHarness({ fs: false });
+  h.handle(tapEvent(false));
+  assert.strictEqual(h.on(), false);
 });
-check("D: 設定→画角: 設定パネルが閉じ、footerを隠す(2つのパネルが重ならない)", async () => {
-  const ui = makeUI({ stream: streamOf(fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } })) });
-  await ui.refreshCameraFeatures();
-  ui.$("secondaryControls").classList.add("open");
-  ui.$("settingsToggle").classList.add("on");
-  ui.openAnglePanel();
-  assert.strictEqual(ui.$("secondaryControls").classList.contains("open"), false);
-  assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), true);
+check("D(挙動): 操作ボタン・全画面終了ボタン上のタップでは切り替えない", () => {
+  const h = makeTapHarness({ fs: true });
+  h.handle(tapEvent(true));
+  assert.strictEqual(h.on(), false);
+  h.handle(tapEvent(false));
+  h.handle(tapEvent(true));
+  assert.strictEqual(h.on(), true, "ボタン操作で隠れてしまった");
 });
-check("D(静的): 設定ボタンのハンドラは、開くときcloseAnglePanel()を呼ぶ(画角→設定の相互排他)", () => {
-  const m = html.match(/settingsToggleBtn\.addEventListener\("click",[\s\S]*?\n  \}\);/);
-  assert.ok(m, "設定ボタンのハンドラが見つからない");
-  assert.ok(/if \(open\) closeAnglePanel\(\)/.test(m[0]));
+check("D(挙動): ライブのマーキング中のタップでは切り替えない", () => {
+  const h = makeTapHarness({ fs: true, markingMode: "point" });
+  h.handle(tapEvent(false));
+  assert.strictEqual(h.on(), false);
+  h.setMarking("none");
+  h.handle(tapEvent(false));
+  assert.strictEqual(h.on(), true);
 });
-check("D(静的): マーキングモード・全画面の処理はSTEP26-Dで変更していない(angle関連の記述が混入していない)", () => {
-  const mm = html.match(/function setMarkingMode\(mode\) \{[\s\S]*?\n  \}/);
-  assert.ok(mm && !/angle(Open|-adjusting)|closeAnglePanel/.test(mm[0]));
-  const fs2 = html.match(/function toggleFullscreen\(\) \{[\s\S]*?\n  \}/);
-  assert.ok(fs2 && !/angle(Open|-adjusting)|closeAnglePanel/.test(fs2[0]));
+check("D(静的): #fsControlsは既定で非表示、fs-controls-on のときだけ表示(ネイティブ・疑似全画面の両方)", () => {
+  const base = html.match(/#stage:fullscreen #fsControls,\s*\n\s*#stage:-webkit-full-screen #fsControls,\s*\n\s*#app\.pseudo-fullscreen #fsControls \{[^}]*\}/)[0];
+  assert.ok(/display: none;/.test(base) && !/display: flex/.test(base), "既定でdisplay:noneになっていない");
+  assert.ok(/#app\.fs-controls-on #stage:fullscreen #fsControls,/.test(html));
+  assert.ok(/#app\.fs-controls-on #stage:-webkit-full-screen #fsControls,/.test(html));
+  assert.ok(/#app\.pseudo-fullscreen\.fs-controls-on #fsControls \{ display: flex; \}/.test(html));
 });
+check("D(静的): 操作ボタンが隠れている間は遅延表示・スロー表示も隠す。全画面終了ボタンは常に表示", () => {
+  assert.ok(/#app:not\(\.fs-controls-on\) #stage:fullscreen #delayBadge/.test(html));
+  assert.ok(/#app\.pseudo-fullscreen:not\(\.fs-controls-on\) #slowIndicator/.test(html));
+  assert.ok(!/fs-controls-on[^{]*#fsExit/.test(html), "全画面終了ボタンが条件付きになっている");
+  assert.ok(/#stage:fullscreen #fsExit, #stage:-webkit-full-screen #fsExit,\s*\n\s*#app\.pseudo-fullscreen #fsExit \{ display: block; \}/.test(html));
+});
+check("D(静的): 全画面に入る/出るたびに操作ボタンは隠れた状態へ戻る", () => {
+  const fn = html.match(/function updateFullscreenButton\(\) \{[\s\S]*?\n  \}/)[0];
+  assert.ok(fn.includes('appEl.classList.remove("fs-controls-on")'));
+});
+check("D(静的): 全画面中はUIを薄くしない(最初のタップが再表示だけで消費されない)", () => {
+  assert.ok(/ui-dim"\) && !isFullscreenActive\(\)/.test(html));
+  assert.ok(/if \(angleOpen \|\| isFullscreenActive\(\)\) return;/.test(html));
+});
+check("D(静的): stageのクリックにハンドラが登録され、通常画面のレイアウト(ヘッダー/フッター)は変更していない", () => {
+  assert.ok(html.includes('stageEl.addEventListener("click", handleStageTapForFullscreenControls)'));
+  assert.ok(/#app\.pseudo-fullscreen header, #app\.pseudo-fullscreen footer \{ display: none; \}/.test(html));
+});
+
 
 (async () => {
   for (const t of tests) {
