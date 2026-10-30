@@ -524,6 +524,10 @@
   .angle-label { font-size: 10px; color: var(--text-dim); white-space: nowrap; }
   .angle-notice { margin: 4px 0 0; font-size: 10px; color: var(--warn); line-height: 1.4; }
   .angle-notice:empty { display: none; }
+  /* 画角パネルを開いている間は、映像をできるだけ広く確認できるよう、下部の操作(5秒戻る/進む・スロー確認・
+     再生/一時停止・現在へ・設定シート・マーキングツールバー)をまとめて隠す。閉じると元に戻る。
+     ヘッダーは残す(画角ボタンで閉じられるようにするため)。 */
+  #app.angle-adjusting footer { display: none; }
   /* 全画面中は画角操作を提供しない(画角の調整は全画面にする前に行う) */
   #stage:fullscreen #cameraFeatureBlock, #stage:-webkit-full-screen #cameraFeatureBlock,
   #app.pseudo-fullscreen #cameraFeatureBlock { display: none !important; }
@@ -3472,6 +3476,9 @@
     angleToggleBtn.style.display = hasAny ? "" : "none";
     angleToggleBtn.classList.toggle("on", angleOpen && hasAny);
     cameraFeatureBlock.style.display = angleOpen && hasAny ? "block" : "none";
+    // 画角パネルを開いている間は下部操作を隠して映像を広く見せる。カメラ切替中の一時的なリセットで
+    // 画面が上下に揺れないよう、判定にはhasAnyを含めず開閉状態(angleOpen)だけを使う。
+    appEl.classList.toggle("angle-adjusting", angleOpen);
     zoomBlock.style.display = hasZoom ? "block" : "none";
     cameraSelectBlock.style.display = hasSelect ? "block" : "none";
 
