@@ -351,7 +351,8 @@ function makeUI(initial) {
       "\nlet stream = env.stream; let isSaving = env.isSaving;" +
       "\nconst flipBtn = document.getElementById('flipCamera');" +
       "\nconst secondaryControls = document.getElementById('secondaryControls');" +
-      "\nconst settingsToggleBtn = document.getElementById('settingsToggle');\n" +
+      "\nconst settingsToggleBtn = document.getElementById('settingsToggle');" +
+      "\nconst appEl = document.getElementById('app');\n" +
       uiSrc +
       "\nreturn { openAnglePanel, closeAnglePanel, refreshCameraFeatures, resetCameraFeatures, renderCameraControls," +
       " setStream(s) { stream = s; }, setSaving(v) { isSaving = v; updateCameraControlsEnabled(); }," +
@@ -499,6 +500,87 @@ check("C: 検出・ズーム適用・切替・復旧の各ロジックはSTEP26-
     assert.ok(pureSrc.includes("function " + f), f)
   );
   ["requestZoom", "switchToDevice", "refreshCameraFeatures"].forEach((f) => assert.ok(uiSrc.includes("function " + f), f));
+});
+
+
+check("C2: 画角パネルを開くと下部操作(footer)を隠すクラスが付き、閉じると外れる", async () => {
+  const ui = makeUI({ stream: streamOf(fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } })) });
+  await ui.refreshCameraFeatures();
+  assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), false);
+  ui.openAnglePanel();
+  assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), true);
+  ui.$("angleClose").listeners.click();
+  assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), false);
+});
+check("C2: 設定パネルを開く(closeAnglePanel)と、隠していた下部操作が元に戻る", async () => {
+  const ui = makeUI({ stream: streamOf(fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } })) });
+  await ui.refreshCameraFeatures();
+  ui.openAnglePanel();
+  ui.closeAnglePanel();
+  assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), false);
+});
+check("C2: カメラ切替中の一時リセットでは下部操作を再表示しない(画面が揺れない)。機能なしトラックへ切り替わったら元に戻る", async () => {
+  const ui = makeUI({ stream: streamOf(fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } })) });
+  await ui.refreshCameraFeatures();
+  ui.openAnglePanel();
+  ui.resetCameraFeatures();
+  assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), true);
+  ui.setStream(streamOf(fakeTrack({ caps: {}, settings: {} })));
+  await ui.refreshCameraFeatures();
+  assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), false);
+});
+check("C2(静的): 隠す対象はfooter(5秒戻る/進む・スロー確認・再生/現在へを含む)で、ヘッダーと画角パネルは隠さない", () => {
+  assert.ok(/#app\.angle-adjusting footer \{ display: none; \}/.test(html));
+  assert.ok(!/angle-adjusting header|angle-adjusting #stage|angle-adjusting #cameraFeatureBlock/.test(html));
+  const footer = html.slice(html.indexOf("<footer>"), html.indexOf("</footer>"));
+  ["act-seek-back", "act-slow-check", "act-seek-fwd", "act-play-pause", "act-go-live"].forEach((c) =>
+    assert.ok(footer.includes(c), c + "がfooter内に無い")
+  );
+  const header = html.slice(html.indexOf("<header>"), html.indexOf("</header>"));
+  assert.ok(header.includes('id="angleToggle"'));
+});
+
+// =================================================================
+// STEP26-D: 案A(footer全体を退避)の正式採用。実装はSTEP26-C2のまま、不足していた観点だけ追加する。
+// =================================================================
+check("D: 通常状態(画角パネルが閉じている)ではangle-adjustingが付いていない(footerは通常表示)", async () => {
+  const ui = makeUI({ stream: streamOf(fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } })) });
+  assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), false);
+  await ui.refreshCameraFeatures();
+  assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), false);
+  assert.strictEqual(ui.angleOpen, false);
+});
+check("D: 開閉を繰り返しても、angle-adjustingと画角パネルの表示が常に一致する", async () => {
+  const ui = makeUI({ stream: streamOf(fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } })) });
+  await ui.refreshCameraFeatures();
+  for (let i = 0; i < 5; i++) {
+    ui.openAnglePanel();
+    assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), true);
+    assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "block");
+    ui.closeAnglePanel();
+    assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), false);
+    assert.strictEqual(ui.$("cameraFeatureBlock").style.display, "none");
+  }
+});
+check("D: 設定→画角: 設定パネルが閉じ、footerを隠す(2つのパネルが重ならない)", async () => {
+  const ui = makeUI({ stream: streamOf(fakeTrack({ caps: ZOOM_CAPS, settings: { zoom: 2 } })) });
+  await ui.refreshCameraFeatures();
+  ui.$("secondaryControls").classList.add("open");
+  ui.$("settingsToggle").classList.add("on");
+  ui.openAnglePanel();
+  assert.strictEqual(ui.$("secondaryControls").classList.contains("open"), false);
+  assert.strictEqual(ui.$("app").classList.contains("angle-adjusting"), true);
+});
+check("D(静的): 設定ボタンのハンドラは、開くときcloseAnglePanel()を呼ぶ(画角→設定の相互排他)", () => {
+  const m = html.match(/settingsToggleBtn\.addEventListener\("click",[\s\S]*?\n  \}\);/);
+  assert.ok(m, "設定ボタンのハンドラが見つからない");
+  assert.ok(/if \(open\) closeAnglePanel\(\)/.test(m[0]));
+});
+check("D(静的): マーキングモード・全画面の処理はSTEP26-Dで変更していない(angle関連の記述が混入していない)", () => {
+  const mm = html.match(/function setMarkingMode\(mode\) \{[\s\S]*?\n  \}/);
+  assert.ok(mm && !/angle(Open|-adjusting)|closeAnglePanel/.test(mm[0]));
+  const fs2 = html.match(/function toggleFullscreen\(\) \{[\s\S]*?\n  \}/);
+  assert.ok(fs2 && !/angle(Open|-adjusting)|closeAnglePanel/.test(fs2[0]));
 });
 
 (async () => {
